@@ -7,26 +7,44 @@ import jwt from "jsonwebtoken";
 import Database from "better-sqlite3";
 import path from "path";
 import { fileURLToPath } from "url";
+import multer from "multer";
 
 const app = express();
 
 const PORT = Number(process.env.PORT || 3001);
-const FRONTEND_ORIGIN = (process.env.FRONTEND_ORIGIN || "http://localhost:5173").trim();
+const FRONTEND_ORIGIN = (process.env.FRONTEND_ORIGIN || "").trim();
 const JWT_SECRET = (process.env.JWT_SECRET || "").trim();
+const OPENAI_API_KEY = (process.env.OPENAI_API_KEY || "").trim();
+const N8N_WEBHOOK_URL = (process.env.N8N_WEBHOOK_URL || "").trim();
+const N8N_AUTH_HEADER = (process.env.N8N_AUTH_HEADER || "").trim();
+const N8N_AUTH_VALUE = (process.env.N8N_AUTH_VALUE || "").trim();
+const IS_PROD = process.env.NODE_ENV === "production";
 
 if (!JWT_SECRET) {
-  console.error("❌ Missing JWT_SECRET in .env");
+  console.error("❌ Missing JWT_SECRET");
   process.exit(1);
 }
 
-app.use(cors({ origin: FRONTEND_ORIGIN, credentials: true }));
-app.use(express.json({ limit: "2mb" }));
+app.use(
+  cors({
+    origin: FRONTEND_ORIGIN || true,
+    credentials: true,
+  })
+);
+
+app.use(express.json({ limit: "10mb" }));
 app.use(cookieParser());
+
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: {
+    fileSize: 30 * 1024 * 1024,
+  },
+});
 
 // ---------------- DB ----------------
 const db = new Database("app.db");
 
-// Create table if not exists
 db.exec(`
   CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -54,21 +72,27 @@ function setAuthCookie(res, token) {
   res.cookie("token", token, {
     httpOnly: true,
     sameSite: "lax",
-    secure: false,
+    secure: IS_PROD,
     path: "/",
     maxAge: 7 * 24 * 60 * 60 * 1000,
   });
 }
 
 function clearAuthCookie(res) {
-  res.clearCookie("token", { path: "/" });
+  res.clearCookie("token", {
+    path: "/",
+    sameSite: "lax",
+    secure: IS_PROD,
+  });
 }
 
 // ---------------- Auth middleware ----------------
 function authMiddleware(req, res, next) {
   try {
     const token = req.cookies?.token;
-    if (!token) return res.status(401).json({ ok: false, error: "Not authenticated" });
+    if (!token) {
+      return res.status(401).json({ ok: false, error: "Not authenticated" });
+    }
 
     const decoded = jwt.verify(token, JWT_SECRET);
     req.user = decoded;
@@ -115,8 +139,85 @@ function ensureAdmin() {
 
 ensureAdmin();
 
-// ---------------- Routes ----------------
+// ---------------- Helpers ----------------
+function safeJsonParse(value, fallback) {
+  try {
+    return JSON.parse(value);
+  } catch {
+    return fallback;
+  }
+}
 
+async function transcribeWithOpenAI(file) {
+  if (!OPENAI_API_KEY) {
+    throw new Error("Missing OPENAI_API_KEY");
+  }
+
+  const form = new FormData();
+  const blob = new Blob([file.buffer], {
+    type: file.mimetype || "audio/webm",
+  });
+
+  form.append("file", blob, file.originalname || "meeting.webm");
+  form.append("model", "gpt-4o-transcribe");
+  form.append("response_format", "json");
+
+  const r = await fetch("https://api.openai.com/v1/audio/transcriptions", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${OPENAI_API_KEY}`,
+    },
+    body: form,
+  });
+
+  if (!r.ok) {
+    const txt = await r.text();
+    throw new Error(`OpenAI transcription failed: ${r.status} ${txt}`);
+  }
+
+  const data = await r.json();
+  return data?.text || "";
+}
+
+async function sendToN8N(payload) {
+  if (!N8N_WEBHOOK_URL) {
+    throw new Error("Missing N8N_WEBHOOK_URL");
+  }
+
+  const headers = {
+    "Content-Type": "application/json",
+  };
+
+  if (N8N_AUTH_HEADER && N8N_AUTH_VALUE) {
+    headers[N8N_AUTH_HEADER] = N8N_AUTH_VALUE;
+  }
+
+  const r = await fetch(N8N_WEBHOOK_URL, {
+    method: "POST",
+    headers,
+    body: JSON.stringify(payload),
+  });
+
+  const rawText = await r.text();
+  let parsed = null;
+
+  try {
+    parsed = JSON.parse(rawText);
+  } catch {
+    parsed = { raw: rawText };
+  }
+
+  if (!r.ok) {
+    throw new Error(`n8n webhook failed: ${r.status} ${rawText}`);
+  }
+
+  return {
+    status: r.status,
+    data: parsed,
+  };
+}
+
+// ---------------- Routes ----------------
 app.get("/health", (req, res) => {
   res.json({ ok: true });
 });
@@ -167,7 +268,6 @@ app.get("/auth/me", authMiddleware, (req, res) => {
 });
 
 // -------- Admin users --------
-
 app.get("/admin/users", authMiddleware, adminMiddleware, (req, res) => {
   const users = db
     .prepare(
@@ -217,8 +317,70 @@ app.post("/admin/users", authMiddleware, adminMiddleware, (req, res) => {
   });
 });
 
-// ---------------- Serve frontend (production) ----------------
+// -------- Upload audio --------
+app.post("/upload-audio", authMiddleware, upload.single("audio"), async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ ok: false, error: "Missing audio file" });
+    }
 
+    const emails = safeJsonParse(req.body?.emails || "[]", [])
+      .map((e) => String(e || "").trim())
+      .filter((e) => e.includes("@"));
+
+    const titulo = String(req.body?.titulo || "Reunión automática").trim();
+    const gestoria = String(req.body?.gestoria || "").trim();
+    const comunidad = String(req.body?.comunidad || "").trim();
+    const fecha = nowIso();
+
+    console.log("🎙️ /upload-audio received", {
+      fileName: req.file.originalname,
+      mimeType: req.file.mimetype,
+      size: req.file.size,
+      user: req.user?.email,
+    });
+
+    const transcript = await transcribeWithOpenAI(req.file);
+
+    const n8nPayload = {
+      transcript,
+      emails,
+      titulo,
+      gestoria,
+      comunidad,
+      fecha,
+      source: "DEDCAM Software",
+      userEmail: req.user?.email || "",
+    };
+
+    const n8nResult = await sendToN8N(n8nPayload);
+    const n8nData = n8nResult.data || {};
+
+    const acta =
+      n8nData.acta ||
+      n8nData.summary ||
+      n8nData.html ||
+      n8nData.raw ||
+      "";
+
+    return res.json({
+      ok: true,
+      emails,
+      transcript,
+      acta,
+      n8nStatus: n8nResult.status,
+      n8nResponse: n8nData,
+    });
+  } catch (err) {
+    console.error("❌ /upload-audio error:", err);
+    return res.status(500).json({
+      ok: false,
+      error: err?.message || "Upload/transcription failed",
+    });
+  }
+});
+
+// ---------------- Serve frontend (production) ----------------
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
@@ -229,9 +391,8 @@ app.get(/.*/, (req, res) => {
 });
 
 // ---------------- Start ----------------
-
 console.log("🔐 Auth Config: JWT OK");
-console.log("🌐 Frontend origin:", FRONTEND_ORIGIN);
+console.log("🌐 Frontend origin:", FRONTEND_ORIGIN || "(not set)");
 
 app.listen(PORT, () => {
   console.log(`✅ Server running on http://localhost:${PORT}`);
