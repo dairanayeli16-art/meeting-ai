@@ -148,6 +148,34 @@ function safeJsonParse(value, fallback) {
   }
 }
 
+function unwrapN8nData(data) {
+  if (Array.isArray(data)) return data[0] || {};
+  return data || {};
+}
+
+function extractActa(data) {
+  const d = unwrapN8nData(data);
+  return (
+    d.acta ||
+    d.summary ||
+    d.resumen ||
+    d.html ||
+    d.output?.acta ||
+    d.data?.acta ||
+    d.result?.acta ||
+    ""
+  );
+}
+
+function extractEmailInfo(data) {
+  const d = unwrapN8nData(data);
+  return {
+    emailSent: d.emailSent ?? d.email_sent ?? d.sent ?? null,
+    pdfUrl: d.pdfUrl || d.pdf_url || d.url || null,
+    pdfFileName: d.pdfFileName || d.filename || null,
+  };
+}
+
 async function transcribeWithOpenAI(file) {
   if (!OPENAI_API_KEY) {
     throw new Error("Missing OPENAI_API_KEY");
@@ -338,9 +366,18 @@ app.post("/upload-audio", authMiddleware, upload.single("audio"), async (req, re
       mimeType: req.file.mimetype,
       size: req.file.size,
       user: req.user?.email,
+      emails,
+      titulo,
+      gestoria,
+      comunidad,
     });
 
     const transcript = await transcribeWithOpenAI(req.file);
+
+    console.log("📝 Transcription OK", {
+      transcriptLength: transcript?.length || 0,
+      transcriptPreview: (transcript || "").slice(0, 180),
+    });
 
     const n8nPayload = {
       transcript,
@@ -353,15 +390,26 @@ app.post("/upload-audio", authMiddleware, upload.single("audio"), async (req, re
       userEmail: req.user?.email || "",
     };
 
-    const n8nResult = await sendToN8N(n8nPayload);
-    const n8nData = n8nResult.data || {};
+    console.log("📤 Sending to n8n...", {
+      webhook: N8N_WEBHOOK_URL ? "configured" : "missing",
+      authHeader: N8N_AUTH_HEADER || "(none)",
+    });
 
-    const acta =
-      n8nData.acta ||
-      n8nData.summary ||
-      n8nData.html ||
-      n8nData.raw ||
-      "";
+    const n8nResult = await sendToN8N(n8nPayload);
+    const n8nData = unwrapN8nData(n8nResult.data);
+
+    console.log("📥 n8n response", JSON.stringify(n8nData).slice(0, 1000));
+
+    const acta = extractActa(n8nData);
+    const emailInfo = extractEmailInfo(n8nData);
+
+    console.log("📄 Parsed result", {
+      hasActa: !!acta,
+      actaLength: acta?.length || 0,
+      emailSent: emailInfo.emailSent,
+      pdfUrl: emailInfo.pdfUrl,
+      pdfFileName: emailInfo.pdfFileName,
+    });
 
     return res.json({
       ok: true,
@@ -370,6 +418,9 @@ app.post("/upload-audio", authMiddleware, upload.single("audio"), async (req, re
       acta,
       n8nStatus: n8nResult.status,
       n8nResponse: n8nData,
+      emailSent: emailInfo.emailSent,
+      pdfUrl: emailInfo.pdfUrl,
+      pdfFileName: emailInfo.pdfFileName,
     });
   } catch (err) {
     console.error("❌ /upload-audio error:", err);
