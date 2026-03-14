@@ -36,7 +36,10 @@ export default function App() {
   // ---------- RESULT BOX (NO ALERTS) ----------
   const [resultBox, setResultBox] = useState(null); // { ok, emails, acta, transcript, n8nStatus, error }
   const [modal, setModal] = useState({ open: false, title: "", text: "" });
-  const openModal = (title, text) => setModal({ open: true, title, text: text || "(vacío)" });
+
+  const openModal = (title, text) =>
+    setModal({ open: true, title, text: text || "(vacío)" });
+
   const closeModal = () => setModal({ open: false, title: "", text: "" });
 
   // ---------- ADMIN PANEL ----------
@@ -46,6 +49,96 @@ export default function App() {
   const [newUserEmail, setNewUserEmail] = useState("");
   const [newUserPassword, setNewUserPassword] = useState("");
   const [newUserRole, setNewUserRole] = useState("user");
+
+  function tryParseJson(value) {
+    if (typeof value !== "string") return value;
+    try {
+      return JSON.parse(value);
+    } catch {
+      return value;
+    }
+  }
+
+  function formatDate(value) {
+    if (!value) return "—";
+    const d = new Date(value);
+    if (Number.isNaN(d.getTime())) return String(value);
+    return d.toLocaleDateString("es-ES");
+  }
+
+  function formatActaForDisplay(actaRaw) {
+    const acta = tryParseJson(actaRaw);
+
+    if (!acta) return "(vacío)";
+
+    if (typeof acta === "string") return acta;
+
+    const encabezado = acta?.encabezado || {};
+    const convocatoria = acta?.convocatoria || {};
+    const asistentes = Array.isArray(acta?.asistentes) ? acta.asistentes : [];
+    const ordenDia = Array.isArray(acta?.orden_del_dia) ? acta.orden_del_dia : [];
+    const desarrollo = Array.isArray(acta?.desarrollo) ? acta.desarrollo : [];
+    const acuerdos = Array.isArray(acta?.acuerdos) ? acta.acuerdos : [];
+
+    const lines = [];
+
+    lines.push("ACTA DE REUNIÓN");
+    lines.push("");
+    lines.push(`Título: ${encabezado.titulo || "—"}`);
+    lines.push(`Comunidad: ${encabezado.comunidad || "—"}`);
+    lines.push(`Gestoría: ${encabezado.gestoria || "—"}`);
+    lines.push(`Fecha: ${formatDate(encabezado.fecha_iso || acta.fecha_redaccion)}`);
+    lines.push(`Ciudad: ${acta.ciudad || "—"}`);
+    lines.push(`Tipo de junta: ${acta.tipo_junta || "—"}`);
+    lines.push("");
+
+    lines.push("CONVOCATORIA");
+    lines.push(`Hora primera: ${convocatoria.hora_primera || "—"}`);
+    lines.push(`Hora segunda: ${convocatoria.hora_segunda || "—"}`);
+    lines.push(`Lugar: ${convocatoria.lugar || "—"}`);
+    lines.push("");
+
+    lines.push("ASISTENTES");
+    if (asistentes.length) {
+      asistentes.forEach((a, i) => {
+        lines.push(
+          `${i + 1}. Propietario: ${a.propietario || "—"} | Piso: ${a.piso || "—"} | Coeficiente: ${a.coeficiente || "—"} | Representación: ${a.representacion || "—"}`
+        );
+      });
+    } else {
+      lines.push("—");
+    }
+    lines.push("");
+
+    lines.push("ORDEN DEL DÍA");
+    if (ordenDia.length) {
+      ordenDia.forEach((p, i) => lines.push(`${i + 1}. ${p}`));
+    } else {
+      lines.push("—");
+    }
+    lines.push("");
+
+    lines.push("DESARROLLO");
+    if (desarrollo.length) {
+      desarrollo.forEach((item, i) => {
+        lines.push(`${i + 1}. ${item.titulo || `Punto ${item.punto || i + 1}`}`);
+        lines.push(item.resumen || "—");
+        lines.push("");
+      });
+    } else {
+      lines.push("—");
+      lines.push("");
+    }
+
+    lines.push("ACUERDOS");
+    if (acuerdos.length) {
+      acuerdos.forEach((a, i) => lines.push(`${i + 1}. ${a}`));
+    } else {
+      lines.push("—");
+    }
+
+    return lines.join("\n");
+  }
 
   async function fetchMe() {
     setAuthLoading(true);
@@ -72,7 +165,10 @@ export default function App() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
-        body: JSON.stringify({ email: loginEmail.trim(), password: loginPassword }),
+        body: JSON.stringify({
+          email: loginEmail.trim(),
+          password: loginPassword,
+        }),
       });
       const j = await r.json();
       if (!j?.ok) {
@@ -89,7 +185,10 @@ export default function App() {
 
   async function logout() {
     try {
-      await fetch(`${API_BASE}/auth/logout`, { method: "POST", credentials: "include" });
+      await fetch(`${API_BASE}/auth/logout`, {
+        method: "POST",
+        credentials: "include",
+      });
     } catch {}
     setUser(null);
     setAdminOpen(false);
@@ -100,7 +199,9 @@ export default function App() {
   async function loadUsers() {
     setAdminStatus("Loading users...");
     try {
-      const r = await fetch(`${API_BASE}/admin/users`, { credentials: "include" });
+      const r = await fetch(`${API_BASE}/admin/users`, {
+        credentials: "include",
+      });
       const j = await r.json();
       if (!j?.ok) {
         setAdminStatus(j?.error || "Not allowed");
@@ -118,8 +219,12 @@ export default function App() {
     const email = newUserEmail.trim();
     const password = newUserPassword;
 
-    if (!email.includes("@")) return setAdminStatus("Please enter a valid email.");
-    if (password.length < 6) return setAdminStatus("Password must be at least 6 characters.");
+    if (!email.includes("@")) {
+      return setAdminStatus("Please enter a valid email.");
+    }
+    if (password.length < 6) {
+      return setAdminStatus("Password must be at least 6 characters.");
+    }
 
     setAdminStatus("Creating user...");
     try {
@@ -148,7 +253,9 @@ export default function App() {
     try {
       setStatus("Requesting mic permission...");
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      const mr = new MediaRecorder(stream, { mimeType: "audio/webm;codecs=opus" });
+      const mr = new MediaRecorder(stream, {
+        mimeType: "audio/webm;codecs=opus",
+      });
       chunksRef.current = [];
 
       mr.ondataavailable = (e) => {
@@ -156,7 +263,9 @@ export default function App() {
       };
 
       mr.onstop = () => {
-        const blob = new Blob(chunksRef.current, { type: "audio/webm;codecs=opus" });
+        const blob = new Blob(chunksRef.current, {
+          type: "audio/webm;codecs=opus",
+        });
         setAudioBlob(blob);
         setStatus("Recording ready ✅");
         stream.getTracks().forEach((t) => t.stop());
@@ -222,13 +331,13 @@ export default function App() {
       }
 
       setStatus("Sent ✅");
-      setResultBox({
-        ok: true,
-        emails: data.emails || emails,
-        acta: data.acta || "",
-        transcript: data.transcript || "",
-        n8nStatus: data.n8nStatus || null,
-      });
+     setResultBox({
+  ok: true,
+  emails: data.emails || emails,
+  acta: data.acta_texto || data.acta || "",
+  transcript: data.transcript || "",
+  n8nStatus: data.n8nStatus || null,
+});
     } catch {
       setStatus("Backend not responding ❌");
       setResultBox({ ok: false, error: "No pude conectar con el backend." });
@@ -315,7 +424,9 @@ export default function App() {
                 <h1 className="title">DEDCAM SOFTWARE</h1>
                 <div className="pill">{status}</div>
               </div>
-              <div className="subtitle">AI recorder with transcription and PDF creation — 2026 version</div>
+              <div className="subtitle">
+                AI recorder with transcription and PDF creation — 2026 version
+              </div>
               <div className="muted small">
                 Logged in as: {user.email} ({user.role})
               </div>
@@ -346,19 +457,35 @@ export default function App() {
         <div className="grid4">
           <div>
             <label className="label">Emails</label>
-            <input className="input" value={emailsText} onChange={(e) => setEmailsText(e.target.value)} />
+            <input
+              className="input"
+              value={emailsText}
+              onChange={(e) => setEmailsText(e.target.value)}
+            />
           </div>
           <div>
             <label className="label">Title</label>
-            <input className="input" value={titulo} onChange={(e) => setTitulo(e.target.value)} />
+            <input
+              className="input"
+              value={titulo}
+              onChange={(e) => setTitulo(e.target.value)}
+            />
           </div>
           <div>
             <label className="label">Agency</label>
-            <input className="input" value={gestoria} onChange={(e) => setGestoria(e.target.value)} />
+            <input
+              className="input"
+              value={gestoria}
+              onChange={(e) => setGestoria(e.target.value)}
+            />
           </div>
           <div>
             <label className="label">Community</label>
-            <input className="input" value={comunidad} onChange={(e) => setComunidad(e.target.value)} />
+            <input
+              className="input"
+              value={comunidad}
+              onChange={(e) => setComunidad(e.target.value)}
+            />
           </div>
         </div>
 
@@ -373,11 +500,19 @@ export default function App() {
             </button>
           )}
 
-          <button className="btn btnGhost" onClick={() => setAudioBlob(null)} disabled={!audioBlob || recording || sending}>
+          <button
+            className="btn btnGhost"
+            onClick={() => setAudioBlob(null)}
+            disabled={!audioBlob || recording || sending}
+          >
             Clear
           </button>
 
-          <button className="btn btnDark" onClick={sendToServer} disabled={!audioBlob || recording || sending}>
+          <button
+            className="btn btnDark"
+            onClick={sendToServer}
+            disabled={!audioBlob || recording || sending}
+          >
             Send
           </button>
         </div>
@@ -392,7 +527,9 @@ export default function App() {
         {resultBox && (
           <div className={`resultBox ${resultBox.ok ? "ok" : "bad"}`}>
             <div className="resultTop">
-              <div className="resultTitle">{resultBox.ok ? "✅ Completed" : "❌ Error"}</div>
+              <div className="resultTitle">
+                {resultBox.ok ? "✅ Completed" : "❌ Error"}
+              </div>
               <button className="chip" onClick={() => setResultBox(null)}>
                 Clear
               </button>
@@ -401,16 +538,27 @@ export default function App() {
             {resultBox.ok ? (
               <>
                 <div className="resultLine">
-                  <b>Emails:</b> {(resultBox.emails || []).length ? resultBox.emails.join(", ") : "—"}
+                  <b>Emails:</b>{" "}
+                  {(resultBox.emails || []).length
+                    ? resultBox.emails.join(", ")
+                    : "—"}
                 </div>
 
                 <div className="resultActions">
-                  <button className="btn btnGhost" onClick={() => openModal("Acta", resultBox.acta)} disabled={!resultBox.acta}>
+                  <button
+                    className="btn btnGhost"
+                    onClick={() =>
+                      openModal("Acta", formatActaForDisplay(resultBox.acta))
+                    }
+                    disabled={!resultBox.acta}
+                  >
                     Ver Acta
                   </button>
                   <button
                     className="btn btnGhost"
-                    onClick={() => openModal("Transcripción", resultBox.transcript)}
+                    onClick={() =>
+                      openModal("Transcripción", resultBox.transcript)
+                    }
                     disabled={!resultBox.transcript}
                   >
                     Ver Transcripción
@@ -418,7 +566,9 @@ export default function App() {
                 </div>
               </>
             ) : (
-              <div className="resultLine">{resultBox.error || "Error desconocido."}</div>
+              <div className="resultLine">
+                {resultBox.error || "Error desconocido."}
+              </div>
             )}
           </div>
         )}
@@ -442,7 +592,11 @@ export default function App() {
                 value={newUserPassword}
                 onChange={(e) => setNewUserPassword(e.target.value)}
               />
-              <select className="input" value={newUserRole} onChange={(e) => setNewUserRole(e.target.value)}>
+              <select
+                className="input"
+                value={newUserRole}
+                onChange={(e) => setNewUserRole(e.target.value)}
+              >
                 <option value="user">user</option>
                 <option value="admin">admin</option>
               </select>
