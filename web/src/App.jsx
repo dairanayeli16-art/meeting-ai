@@ -37,12 +37,37 @@ export default function App() {
   // { ok, emails, pdf, transcript, n8nStatus, error }
   const [resultBox, setResultBox] = useState(null);
 
+  // ---------- MODAL ----------
   const [modal, setModal] = useState({ open: false, title: "", text: "" });
 
-  const openModal = (title, text) =>
+  const openModal = (title, text) => {
     setModal({ open: true, title, text: text || "(vacío)" });
+  };
 
-  const closeModal = () => setModal({ open: false, title: "", text: "" });
+  const closeModal = () => {
+    setModal({ open: false, title: "", text: "" });
+  };
+
+  async function downloadPdf(url, filename = "acta-reunion.pdf") {
+    if (!url) return;
+
+    try {
+      const response = await fetch(url);
+      const blob = await response.blob();
+      const blobUrl = window.URL.createObjectURL(blob);
+
+      const a = document.createElement("a");
+      a.href = blobUrl;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+
+      window.URL.revokeObjectURL(blobUrl);
+    } catch {
+      window.open(url, "_blank");
+    }
+  }
 
   // ---------- ADMIN PANEL ----------
   const [adminOpen, setAdminOpen] = useState(false);
@@ -55,7 +80,9 @@ export default function App() {
   async function fetchMe() {
     setAuthLoading(true);
     try {
-      const r = await fetch(`${API_BASE}/auth/me`, { credentials: "include" });
+      const r = await fetch(`${API_BASE}/auth/me`, {
+        credentials: "include",
+      });
       const j = await r.json();
       if (j?.ok) setUser(j.user);
       else setUser(null);
@@ -137,11 +164,13 @@ export default function App() {
     const password = newUserPassword;
 
     if (!email.includes("@")) {
-      return setAdminStatus("Please enter a valid email.");
+      setAdminStatus("Please enter a valid email.");
+      return;
     }
 
     if (password.length < 6) {
-      return setAdminStatus("Password must be at least 6 characters.");
+      setAdminStatus("Password must be at least 6 characters.");
+      return;
     }
 
     setAdminStatus("Creating user...");
@@ -395,6 +424,7 @@ export default function App() {
               onChange={(e) => setEmailsText(e.target.value)}
             />
           </div>
+
           <div>
             <label className="label">Title</label>
             <input
@@ -403,6 +433,7 @@ export default function App() {
               onChange={(e) => setTitulo(e.target.value)}
             />
           </div>
+
           <div>
             <label className="label">Agency</label>
             <input
@@ -411,6 +442,7 @@ export default function App() {
               onChange={(e) => setGestoria(e.target.value)}
             />
           </div>
+
           <div>
             <label className="label">Community</label>
             <input
@@ -482,12 +514,27 @@ export default function App() {
                     onClick={() => window.open(resultBox.pdf, "_blank")}
                     disabled={!resultBox.pdf}
                   >
-                    Ver Acta
+                    Abrir PDF
                   </button>
 
                   <button
                     className="btn btnGhost"
-                    onClick={() => openModal("Transcripción", resultBox.transcript)}
+                    onClick={() =>
+                      downloadPdf(
+                        resultBox.pdf,
+                        `acta-${titulo.trim().replace(/\s+/g, "-").toLowerCase() || "reunion"}.pdf`
+                      )
+                    }
+                    disabled={!resultBox.pdf}
+                  >
+                    Descargar PDF
+                  </button>
+
+                  <button
+                    className="btn btnGhost"
+                    onClick={() =>
+                      openModal("Transcripción", resultBox.transcript)
+                    }
                     disabled={!resultBox.transcript}
                   >
                     Ver Transcripción
