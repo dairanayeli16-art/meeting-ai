@@ -33,8 +33,10 @@ export default function App() {
     return URL.createObjectURL(audioBlob);
   }, [audioBlob]);
 
-  // ---------- RESULT BOX (NO ALERTS) ----------
-  const [resultBox, setResultBox] = useState(null); // { ok, emails, acta, transcript, n8nStatus, error }
+  // ---------- RESULT BOX ----------
+  // { ok, emails, pdf, transcript, n8nStatus, error }
+  const [resultBox, setResultBox] = useState(null);
+
   const [modal, setModal] = useState({ open: false, title: "", text: "" });
 
   const openModal = (title, text) =>
@@ -49,96 +51,6 @@ export default function App() {
   const [newUserEmail, setNewUserEmail] = useState("");
   const [newUserPassword, setNewUserPassword] = useState("");
   const [newUserRole, setNewUserRole] = useState("user");
-
-  function tryParseJson(value) {
-    if (typeof value !== "string") return value;
-    try {
-      return JSON.parse(value);
-    } catch {
-      return value;
-    }
-  }
-
-  function formatDate(value) {
-    if (!value) return "—";
-    const d = new Date(value);
-    if (Number.isNaN(d.getTime())) return String(value);
-    return d.toLocaleDateString("es-ES");
-  }
-
-  function formatActaForDisplay(actaRaw) {
-    const acta = tryParseJson(actaRaw);
-
-    if (!acta) return "(vacío)";
-
-    if (typeof acta === "string") return acta;
-
-    const encabezado = acta?.encabezado || {};
-    const convocatoria = acta?.convocatoria || {};
-    const asistentes = Array.isArray(acta?.asistentes) ? acta.asistentes : [];
-    const ordenDia = Array.isArray(acta?.orden_del_dia) ? acta.orden_del_dia : [];
-    const desarrollo = Array.isArray(acta?.desarrollo) ? acta.desarrollo : [];
-    const acuerdos = Array.isArray(acta?.acuerdos) ? acta.acuerdos : [];
-
-    const lines = [];
-
-    lines.push("ACTA DE REUNIÓN");
-    lines.push("");
-    lines.push(`Título: ${encabezado.titulo || "—"}`);
-    lines.push(`Comunidad: ${encabezado.comunidad || "—"}`);
-    lines.push(`Gestoría: ${encabezado.gestoria || "—"}`);
-    lines.push(`Fecha: ${formatDate(encabezado.fecha_iso || acta.fecha_redaccion)}`);
-    lines.push(`Ciudad: ${acta.ciudad || "—"}`);
-    lines.push(`Tipo de junta: ${acta.tipo_junta || "—"}`);
-    lines.push("");
-
-    lines.push("CONVOCATORIA");
-    lines.push(`Hora primera: ${convocatoria.hora_primera || "—"}`);
-    lines.push(`Hora segunda: ${convocatoria.hora_segunda || "—"}`);
-    lines.push(`Lugar: ${convocatoria.lugar || "—"}`);
-    lines.push("");
-
-    lines.push("ASISTENTES");
-    if (asistentes.length) {
-      asistentes.forEach((a, i) => {
-        lines.push(
-          `${i + 1}. Propietario: ${a.propietario || "—"} | Piso: ${a.piso || "—"} | Coeficiente: ${a.coeficiente || "—"} | Representación: ${a.representacion || "—"}`
-        );
-      });
-    } else {
-      lines.push("—");
-    }
-    lines.push("");
-
-    lines.push("ORDEN DEL DÍA");
-    if (ordenDia.length) {
-      ordenDia.forEach((p, i) => lines.push(`${i + 1}. ${p}`));
-    } else {
-      lines.push("—");
-    }
-    lines.push("");
-
-    lines.push("DESARROLLO");
-    if (desarrollo.length) {
-      desarrollo.forEach((item, i) => {
-        lines.push(`${i + 1}. ${item.titulo || `Punto ${item.punto || i + 1}`}`);
-        lines.push(item.resumen || "—");
-        lines.push("");
-      });
-    } else {
-      lines.push("—");
-      lines.push("");
-    }
-
-    lines.push("ACUERDOS");
-    if (acuerdos.length) {
-      acuerdos.forEach((a, i) => lines.push(`${i + 1}. ${a}`));
-    } else {
-      lines.push("—");
-    }
-
-    return lines.join("\n");
-  }
 
   async function fetchMe() {
     setAuthLoading(true);
@@ -170,11 +82,14 @@ export default function App() {
           password: loginPassword,
         }),
       });
+
       const j = await r.json();
+
       if (!j?.ok) {
         setLoginError(j?.error || "Invalid credentials");
         return;
       }
+
       setUser(j.user);
       setLoginPassword("");
       setAdminOpen(false);
@@ -203,10 +118,12 @@ export default function App() {
         credentials: "include",
       });
       const j = await r.json();
+
       if (!j?.ok) {
         setAdminStatus(j?.error || "Not allowed");
         return;
       }
+
       setUsers(j.users || []);
       setAdminStatus(`Loaded ${j.users?.length || 0} users`);
     } catch {
@@ -222,6 +139,7 @@ export default function App() {
     if (!email.includes("@")) {
       return setAdminStatus("Please enter a valid email.");
     }
+
     if (password.length < 6) {
       return setAdminStatus("Password must be at least 6 characters.");
     }
@@ -232,13 +150,20 @@ export default function App() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
-        body: JSON.stringify({ email, password, role: newUserRole }),
+        body: JSON.stringify({
+          email,
+          password,
+          role: newUserRole,
+        }),
       });
+
       const j = await r.json();
+
       if (!j?.ok) {
         setAdminStatus(j?.error || "Failed");
         return;
       }
+
       setAdminStatus("User created ✅");
       setNewUserEmail("");
       setNewUserPassword("");
@@ -256,6 +181,7 @@ export default function App() {
       const mr = new MediaRecorder(stream, {
         mimeType: "audio/webm;codecs=opus",
       });
+
       chunksRef.current = [];
 
       mr.ondataavailable = (e) => {
@@ -300,7 +226,10 @@ export default function App() {
         .filter((e) => e.includes("@"));
 
       if (emails.length === 0) {
-        setResultBox({ ok: false, error: "Añade al menos 1 email válido." });
+        setResultBox({
+          ok: false,
+          error: "Añade al menos 1 email válido.",
+        });
         setSending(false);
         setStatus("Error ❌");
         return;
@@ -331,16 +260,19 @@ export default function App() {
       }
 
       setStatus("Sent ✅");
-     setResultBox({
-  ok: true,
-  emails: data.emails || emails,
-  acta: data.acta_texto || data.acta || "",
-  transcript: data.transcript || "",
-  n8nStatus: data.n8nStatus || null,
-});
+      setResultBox({
+        ok: true,
+        emails: data.emails || emails,
+        pdf: data.pdf_url || data.pdfUrl || "",
+        transcript: data.transcript || "",
+        n8nStatus: data.n8nStatus || null,
+      });
     } catch {
       setStatus("Backend not responding ❌");
-      setResultBox({ ok: false, error: "No pude conectar con el backend." });
+      setResultBox({
+        ok: false,
+        error: "No pude conectar con el backend.",
+      });
     } finally {
       setSending(false);
     }
@@ -547,18 +479,15 @@ export default function App() {
                 <div className="resultActions">
                   <button
                     className="btn btnGhost"
-                    onClick={() =>
-                      openModal("Acta", formatActaForDisplay(resultBox.acta))
-                    }
-                    disabled={!resultBox.acta}
+                    onClick={() => window.open(resultBox.pdf, "_blank")}
+                    disabled={!resultBox.pdf}
                   >
                     Ver Acta
                   </button>
+
                   <button
                     className="btn btnGhost"
-                    onClick={() =>
-                      openModal("Transcripción", resultBox.transcript)
-                    }
+                    onClick={() => openModal("Transcripción", resultBox.transcript)}
                     disabled={!resultBox.transcript}
                   >
                     Ver Transcripción
