@@ -281,6 +281,9 @@ app.get("/debug-routes", (req, res) => {
     pdfDir: PDF_DIR,
     time: new Date().toISOString(),
   });
+  app.get("/test123", (req, res) => {
+  res.send("TEST123 OK");
+});
 });
 app.post("/auth/login", (req, res) => {
   const email = normalizeEmail(req.body?.email);
