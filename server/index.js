@@ -6,10 +6,19 @@ import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import Database from "better-sqlite3";
 import path from "path";
+import fs from "fs";
 import { fileURLToPath } from "url";
 import multer from "multer";
 
 const app = express();
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const PDF_DIR = path.join(__dirname, "pdfs");
+
+if (!fs.existsSync(PDF_DIR)) {
+  fs.mkdirSync(PDF_DIR, { recursive: true });
+}
 
 const PORT = Number(process.env.PORT || 3001);
 const FRONTEND_ORIGIN = (process.env.FRONTEND_ORIGIN || "").trim();
@@ -65,6 +74,16 @@ function normalizeEmail(email) {
 
 function signJwt(payload) {
   return jwt.sign(payload, JWT_SECRET, { expiresIn: "7d" });
+}
+
+function slugify(value) {
+  return String(value || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-zA-Z0-9-_ ]/g, "")
+    .trim()
+    .replace(/\s+/g, "-")
+    .toLowerCase();
 }
 
 // ---------------- Cookies ----------------
@@ -174,6 +193,11 @@ function extractEmailInfo(data) {
     pdfUrl: d.pdfUrl || d.pdf_url || d.url || null,
     pdfFileName: d.pdfFileName || d.filename || null,
   };
+}
+
+function buildPublicPdfUrl(req, fileName) {
+  if (!fileName) return null;
+  return `${req.protocol}://${req.get("host")}/pdf/${encodeURIComponent(fileName)}`;
 }
 
 async function transcribeWithOpenAI(file) {
@@ -345,6 +369,44 @@ app.post("/admin/users", authMiddleware, adminMiddleware, (req, res) => {
   });
 });
 
+// -------- Upload PDF from n8n --------
+app.post("/upload-pdf", upload.single("pdf"), (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ ok: false, error: "Missing PDF file" });
+    }
+
+    const incomingName = String(req.body?.filename || "").trim();
+    const safeBase =
+      slugify(incomingName.replace(/\.pdf$/i, "")) || `acta-${Date.now()}`;
+    const finalFileName = `${safeBase}-${Date.now()}.pdf`;
+    const finalPath = path.join(PDF_DIR, finalFileName);
+
+    fs.writeFileSync(finalPath, req.file.buffer);
+
+    const pdfUrl = buildPublicPdfUrl(req, finalFileName);
+
+    console.log("📎 PDF uploaded", {
+      finalFileName,
+      size: req.file.size,
+      pdfUrl,
+    });
+
+    return res.json({
+      ok: true,
+      pdf_url: pdfUrl,
+      pdfUrl,
+      pdfFileName: finalFileName,
+    });
+  } catch (err) {
+    console.error("❌ /upload-pdf error:", err);
+    return res.status(500).json({
+      ok: false,
+      error: err?.message || "Upload PDF failed",
+    });
+  }
+});
+
 // -------- Upload audio --------
 app.post("/upload-audio", authMiddleware, upload.single("audio"), async (req, res) => {
   try {
@@ -403,11 +465,15 @@ app.post("/upload-audio", authMiddleware, upload.single("audio"), async (req, re
     const acta = extractActa(n8nData);
     const emailInfo = extractEmailInfo(n8nData);
 
+    const resolvedPdfUrl =
+      emailInfo.pdfUrl ||
+      (emailInfo.pdfFileName ? buildPublicPdfUrl(req, emailInfo.pdfFileName) : null);
+
     console.log("📄 Parsed result", {
       hasActa: !!acta,
       actaLength: acta?.length || 0,
       emailSent: emailInfo.emailSent,
-      pdfUrl: emailInfo.pdfUrl,
+      pdfUrl: resolvedPdfUrl,
       pdfFileName: emailInfo.pdfFileName,
     });
 
@@ -419,7 +485,7 @@ app.post("/upload-audio", authMiddleware, upload.single("audio"), async (req, re
       n8nStatus: n8nResult.status,
       n8nResponse: n8nData,
       emailSent: emailInfo.emailSent,
-      pdfUrl: emailInfo.pdfUrl,
+      pdfUrl: resolvedPdfUrl,
       pdfFileName: emailInfo.pdfFileName,
     });
   } catch (err) {
@@ -431,10 +497,8 @@ app.post("/upload-audio", authMiddleware, upload.single("audio"), async (req, re
   }
 });
 
-// ---------------- Serve frontend (production) ----------------
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-
+// ---------------- Static files ----------------
+app.use("/pdf", express.static(PDF_DIR));
 app.use(express.static(path.join(__dirname, "../web/dist")));
 
 app.get(/.*/, (req, res) => {
@@ -444,6 +508,7 @@ app.get(/.*/, (req, res) => {
 // ---------------- Start ----------------
 console.log("🔐 Auth Config: JWT OK");
 console.log("🌐 Frontend origin:", FRONTEND_ORIGIN || "(not set)");
+console.log("📁 PDF dir:", PDF_DIR);
 
 app.listen(PORT, () => {
   console.log(`✅ Server running on http://localhost:${PORT}`);
