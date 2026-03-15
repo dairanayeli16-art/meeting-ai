@@ -273,7 +273,15 @@ async function sendToN8N(payload) {
 app.get("/health", (req, res) => {
   res.json({ ok: true });
 });
-
+app.get("/debug-routes", (req, res) => {
+  res.json({
+    ok: true,
+    message: "debug route works",
+    env: process.env.NODE_ENV || "unknown",
+    pdfDir: PDF_DIR,
+    time: new Date().toISOString(),
+  });
+});
 app.post("/auth/login", (req, res) => {
   const email = normalizeEmail(req.body?.email);
   const password = String(req.body?.password || "");
