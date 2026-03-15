@@ -269,7 +269,65 @@ async function sendToN8N(payload) {
   };
 }
 
+function uploadPdfHandler(req, res) {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ ok: false, error: "Missing PDF file" });
+    }
+
+    const incomingName = String(req.body?.filename || "").trim();
+    const safeBase =
+      slugify(incomingName.replace(/\.pdf$/i, "")) || `acta-${Date.now()}`;
+    const finalFileName = `${safeBase}-${Date.now()}.pdf`;
+    const finalPath = path.join(PDF_DIR, finalFileName);
+
+    fs.writeFileSync(finalPath, req.file.buffer);
+
+    const pdfUrl = buildPublicPdfUrl(req, finalFileName);
+
+    console.log("📎 PDF uploaded", {
+      finalFileName,
+      size: req.file.size,
+      pdfUrl,
+    });
+
+    return res.json({
+      ok: true,
+      pdf_url: pdfUrl,
+      pdfUrl,
+      pdfFileName: finalFileName,
+    });
+  } catch (err) {
+    console.error("❌ upload-pdf error:", err);
+    return res.status(500).json({
+      ok: false,
+      error: err?.message || "Upload PDF failed",
+    });
+  }
+}
+
 // ---------------- Routes ----------------
+
+// API debug routes (new)
+app.get("/api/health", (req, res) => {
+  res.json({ ok: true });
+});
+
+app.get("/api/debug-routes", (req, res) => {
+  res.json({
+    ok: true,
+    message: "debug route works",
+    env: process.env.NODE_ENV || "unknown",
+    pdfDir: PDF_DIR,
+    time: new Date().toISOString(),
+  });
+});
+
+app.get("/api/test123", (req, res) => {
+  res.send("TEST123 OK");
+});
+
+// Legacy debug routes (kept for compatibility)
 app.get("/health", (req, res) => {
   res.json({ ok: true });
 });
@@ -287,6 +345,8 @@ app.get("/debug-routes", (req, res) => {
 app.get("/test123", (req, res) => {
   res.send("TEST123 OK");
 });
+
+// -------- Auth --------
 app.post("/auth/login", (req, res) => {
   const email = normalizeEmail(req.body?.email);
   const password = String(req.body?.password || "");
@@ -358,9 +418,7 @@ app.post("/admin/users", authMiddleware, adminMiddleware, (req, res) => {
       .json({ ok: false, error: "Password too short (min 6)" });
   }
 
-  const exists = db
-    .prepare("SELECT id FROM users WHERE email = ?")
-    .get(email);
+  const exists = db.prepare("SELECT id FROM users WHERE email = ?").get(email);
 
   if (exists) {
     return res.status(409).json({ ok: false, error: "User already exists" });
@@ -383,137 +441,111 @@ app.post("/admin/users", authMiddleware, adminMiddleware, (req, res) => {
 });
 
 // -------- Upload PDF from n8n --------
-app.post("/upload-pdf", upload.single("pdf"), (req, res) => {
-  try {
-    if (!req.file) {
-      return res.status(400).json({ ok: false, error: "Missing PDF file" });
-    }
+// New API route
+app.post("/api/upload-pdf", upload.single("pdf"), uploadPdfHandler);
 
-    const incomingName = String(req.body?.filename || "").trim();
-    const safeBase =
-      slugify(incomingName.replace(/\.pdf$/i, "")) || `acta-${Date.now()}`;
-    const finalFileName = `${safeBase}-${Date.now()}.pdf`;
-    const finalPath = path.join(PDF_DIR, finalFileName);
-
-    fs.writeFileSync(finalPath, req.file.buffer);
-
-    const pdfUrl = buildPublicPdfUrl(req, finalFileName);
-
-    console.log("📎 PDF uploaded", {
-      finalFileName,
-      size: req.file.size,
-      pdfUrl,
-    });
-
-    return res.json({
-      ok: true,
-      pdf_url: pdfUrl,
-      pdfUrl,
-      pdfFileName: finalFileName,
-    });
-  } catch (err) {
-    console.error("❌ /upload-pdf error:", err);
-    return res.status(500).json({
-      ok: false,
-      error: err?.message || "Upload PDF failed",
-    });
-  }
-});
+// Legacy route kept for compatibility
+app.post("/upload-pdf", upload.single("pdf"), uploadPdfHandler);
 
 // -------- Upload audio --------
-app.post("/upload-audio", authMiddleware, upload.single("audio"), async (req, res) => {
-  try {
-    if (!req.file) {
-      return res.status(400).json({ ok: false, error: "Missing audio file" });
+app.post(
+  "/upload-audio",
+  authMiddleware,
+  upload.single("audio"),
+  async (req, res) => {
+    try {
+      if (!req.file) {
+        return res.status(400).json({ ok: false, error: "Missing audio file" });
+      }
+
+      const emails = safeJsonParse(req.body?.emails || "[]", [])
+        .map((e) => String(e || "").trim())
+        .filter((e) => e.includes("@"));
+
+      const titulo = String(req.body?.titulo || "Reunión automática").trim();
+      const gestoria = String(req.body?.gestoria || "").trim();
+      const comunidad = String(req.body?.comunidad || "").trim();
+      const fecha = nowIso();
+
+      console.log("🎙️ /upload-audio received", {
+        fileName: req.file.originalname,
+        mimeType: req.file.mimetype,
+        size: req.file.size,
+        user: req.user?.email,
+        emails,
+        titulo,
+        gestoria,
+        comunidad,
+      });
+
+      const transcript = await transcribeWithOpenAI(req.file);
+
+      console.log("📝 Transcription OK", {
+        transcriptLength: transcript?.length || 0,
+        transcriptPreview: (transcript || "").slice(0, 180),
+      });
+
+      const n8nPayload = {
+        transcript,
+        emails,
+        titulo,
+        gestoria,
+        comunidad,
+        fecha,
+        source: "DEDCAM Software",
+        userEmail: req.user?.email || "",
+      };
+
+      console.log("📤 Sending to n8n...", {
+        webhook: N8N_WEBHOOK_URL ? "configured" : "missing",
+        authHeader: N8N_AUTH_HEADER || "(none)",
+      });
+
+      const n8nResult = await sendToN8N(n8nPayload);
+      const n8nData = unwrapN8nData(n8nResult.data);
+
+      console.log("📥 n8n response", JSON.stringify(n8nData).slice(0, 1000));
+
+      const acta = extractActa(n8nData);
+      const emailInfo = extractEmailInfo(n8nData);
+
+      const resolvedPdfUrl =
+        emailInfo.pdfUrl ||
+        (emailInfo.pdfFileName
+          ? buildPublicPdfUrl(req, emailInfo.pdfFileName)
+          : null);
+
+      console.log("📄 Parsed result", {
+        hasActa: !!acta,
+        actaLength: acta?.length || 0,
+        emailSent: emailInfo.emailSent,
+        pdfUrl: resolvedPdfUrl,
+        pdfFileName: emailInfo.pdfFileName,
+      });
+
+      return res.json({
+        ok: true,
+        emails,
+        transcript,
+        acta,
+        n8nStatus: n8nResult.status,
+        n8nResponse: n8nData,
+        emailSent: emailInfo.emailSent,
+        pdfUrl: resolvedPdfUrl,
+        pdfFileName: emailInfo.pdfFileName,
+      });
+    } catch (err) {
+      console.error("❌ /upload-audio error:", err);
+      return res.status(500).json({
+        ok: false,
+        error: err?.message || "Upload/transcription failed",
+      });
     }
-
-    const emails = safeJsonParse(req.body?.emails || "[]", [])
-      .map((e) => String(e || "").trim())
-      .filter((e) => e.includes("@"));
-
-    const titulo = String(req.body?.titulo || "Reunión automática").trim();
-    const gestoria = String(req.body?.gestoria || "").trim();
-    const comunidad = String(req.body?.comunidad || "").trim();
-    const fecha = nowIso();
-
-    console.log("🎙️ /upload-audio received", {
-      fileName: req.file.originalname,
-      mimeType: req.file.mimetype,
-      size: req.file.size,
-      user: req.user?.email,
-      emails,
-      titulo,
-      gestoria,
-      comunidad,
-    });
-
-    const transcript = await transcribeWithOpenAI(req.file);
-
-    console.log("📝 Transcription OK", {
-      transcriptLength: transcript?.length || 0,
-      transcriptPreview: (transcript || "").slice(0, 180),
-    });
-
-    const n8nPayload = {
-      transcript,
-      emails,
-      titulo,
-      gestoria,
-      comunidad,
-      fecha,
-      source: "DEDCAM Software",
-      userEmail: req.user?.email || "",
-    };
-
-    console.log("📤 Sending to n8n...", {
-      webhook: N8N_WEBHOOK_URL ? "configured" : "missing",
-      authHeader: N8N_AUTH_HEADER || "(none)",
-    });
-
-    const n8nResult = await sendToN8N(n8nPayload);
-    const n8nData = unwrapN8nData(n8nResult.data);
-
-    console.log("📥 n8n response", JSON.stringify(n8nData).slice(0, 1000));
-
-    const acta = extractActa(n8nData);
-    const emailInfo = extractEmailInfo(n8nData);
-
-    const resolvedPdfUrl =
-      emailInfo.pdfUrl ||
-      (emailInfo.pdfFileName ? buildPublicPdfUrl(req, emailInfo.pdfFileName) : null);
-
-    console.log("📄 Parsed result", {
-      hasActa: !!acta,
-      actaLength: acta?.length || 0,
-      emailSent: emailInfo.emailSent,
-      pdfUrl: resolvedPdfUrl,
-      pdfFileName: emailInfo.pdfFileName,
-    });
-
-    return res.json({
-      ok: true,
-      emails,
-      transcript,
-      acta,
-      n8nStatus: n8nResult.status,
-      n8nResponse: n8nData,
-      emailSent: emailInfo.emailSent,
-      pdfUrl: resolvedPdfUrl,
-      pdfFileName: emailInfo.pdfFileName,
-    });
-  } catch (err) {
-    console.error("❌ /upload-audio error:", err);
-    return res.status(500).json({
-      ok: false,
-      error: err?.message || "Upload/transcription failed",
-    });
   }
-});
+);
 
 // ---------------- Static files ----------------
 app.use("/pdf", express.static(PDF_DIR));
-
-// Frontend
 app.use(express.static(path.join(__dirname, "../web/dist")));
 
 app.get("/", (req, res) => {
