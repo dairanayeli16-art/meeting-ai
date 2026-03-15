@@ -512,9 +512,11 @@ app.post("/upload-audio", authMiddleware, upload.single("audio"), async (req, re
 
 // ---------------- Static files ----------------
 app.use("/pdf", express.static(PDF_DIR));
+
+// Frontend
 app.use(express.static(path.join(__dirname, "../web/dist")));
 
-app.get(/.*/, (req, res) => {
+app.get("/", (req, res) => {
   res.sendFile(path.join(__dirname, "../web/dist/index.html"));
 });
 
