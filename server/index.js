@@ -41,8 +41,10 @@ app.use(
   })
 );
 
-app.use(express.json({ limit: "10mb" }));
-app.use(cookieParser());
+app.use((req, res, next) => {
+  console.log("➡️ REQUEST:", req.method, req.originalUrl);
+  next();
+});
 
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -569,7 +571,15 @@ console.log("🌐 Frontend origin:", FRONTEND_ORIGIN || "(not set)");
 console.log("📁 PDF dir:", PDF_DIR);
 
 const HOST = "0.0.0.0";
-
+app.use((req, res) => {
+  console.log("❌ EXPRESS 404:", req.method, req.originalUrl);
+  res.status(404).json({
+    ok: false,
+    source: "express-404",
+    method: req.method,
+    url: req.originalUrl,
+  });
+});
 app.listen(PORT, HOST, () => {
   console.log(`✅ Server running on http://${HOST}:${PORT}`);
 });
