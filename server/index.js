@@ -190,7 +190,7 @@ function extractEmailInfo(data) {
   const d = unwrapN8nData(data);
   return {
     emailSent: d.emailSent ?? d.email_sent ?? d.sent ?? null,
-    pdfUrl: d.pdfUrl || d.pdf_url || d.url || null,
+    pdfUrl: d.pdfUrl || d.pdf_url || null,
     pdfFileName: d.pdfFileName || d.filename || null,
   };
 }
@@ -306,9 +306,7 @@ function uploadPdfHandler(req, res) {
   }
 }
 
-// ---------------- Routes ----------------
-
-// API debug routes (new)
+// ---------------- Debug / API routes ----------------
 app.get("/api/health", (req, res) => {
   res.json({ ok: true });
 });
@@ -327,7 +325,7 @@ app.get("/api/test123", (req, res) => {
   res.send("TEST123 OK");
 });
 
-// Legacy debug routes (kept for compatibility)
+// Optional legacy debug routes
 app.get("/health", (req, res) => {
   res.json({ ok: true });
 });
@@ -441,10 +439,22 @@ app.post("/admin/users", authMiddleware, adminMiddleware, (req, res) => {
 });
 
 // -------- Upload PDF from n8n --------
-// New API route
-app.post("/api/upload-pdf", upload.single("pdf"), uploadPdfHandler);
+// Helpful GET response so browser testing doesn't show bare Not Found
+app.get("/api/upload-pdf", (req, res) => {
+  res.status(405).json({
+    ok: false,
+    error: "Use POST with multipart/form-data. Field name must be 'pdf'.",
+  });
+});
 
-// Legacy route kept for compatibility
+app.get("/upload-pdf", (req, res) => {
+  res.status(405).json({
+    ok: false,
+    error: "Use POST with multipart/form-data. Field name must be 'pdf'.",
+  });
+});
+
+app.post("/api/upload-pdf", upload.single("pdf"), uploadPdfHandler);
 app.post("/upload-pdf", upload.single("pdf"), uploadPdfHandler);
 
 // -------- Upload audio --------
@@ -548,7 +558,8 @@ app.post(
 app.use("/pdf", express.static(PDF_DIR));
 app.use(express.static(path.join(__dirname, "../web/dist")));
 
-app.get("/", (req, res) => {
+// Serve frontend for non-API routes only
+app.get(/^\/(?!api\/|auth\/|admin\/|upload-audio|upload-pdf|pdf\/).*/, (req, res) => {
   res.sendFile(path.join(__dirname, "../web/dist/index.html"));
 });
 
