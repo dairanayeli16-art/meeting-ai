@@ -308,7 +308,11 @@ function uploadPdfHandler(req, res) {
 
 // ---------------- Debug / API routes ----------------
 app.get("/api/health", (req, res) => {
-  res.json({ ok: true });
+  res.json({
+    ok: true,
+    version: "DED_CAM_SERVER_V99",
+    time: new Date().toISOString(),
+  });
 });
 
 app.get("/api/debug-routes", (req, res) => {
@@ -322,7 +326,7 @@ app.get("/api/debug-routes", (req, res) => {
 });
 
 app.get("/api/test123", (req, res) => {
-  res.send("TEST123 OK");
+  res.send("TEST123 OK - DED_CAM_SERVER_V99");
 });
 
 // Optional legacy debug routes
@@ -567,6 +571,8 @@ app.get(/^\/(?!api\/|auth\/|admin\/|upload-audio|upload-pdf|pdf\/).*/, (req, res
 console.log("🔐 Auth Config: JWT OK");
 console.log("🌐 Frontend origin:", FRONTEND_ORIGIN || "(not set)");
 console.log("📁 PDF dir:", PDF_DIR);
+const SERVER_VERSION = "DED_CAM_SERVER_V99";
+console.log("🚨 SERVER VERSION:", SERVER_VERSION);
 
 app.listen(PORT, () => {
   console.log(`✅ Server running on http://localhost:${PORT}`);
