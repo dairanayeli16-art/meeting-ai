@@ -1,8 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import "./App.css";
 
-// ✅ En Render será "", así llamas a /auth/login, /upload-audio, etc.
-// ✅ En local puedes usar VITE_API_BASE=http://localhost:3001 si quieres.
 const API_BASE = import.meta.env.VITE_API_BASE || "";
 
 export default function App() {
@@ -13,6 +11,9 @@ export default function App() {
   const [loginEmail, setLoginEmail] = useState("");
   const [loginPassword, setLoginPassword] = useState("");
   const [loginError, setLoginError] = useState("");
+
+  const loginEmailRef = useRef(null);
+  const loginPasswordRef = useRef(null);
 
   // ---------- RECORDER ----------
   const [recording, setRecording] = useState(false);
@@ -34,7 +35,6 @@ export default function App() {
   }, [audioBlob]);
 
   // ---------- RESULT BOX ----------
-  // { ok, emails, pdf, transcript, n8nStatus, error }
   const [resultBox, setResultBox] = useState(null);
 
   // ---------- MODAL ----------
@@ -52,7 +52,9 @@ export default function App() {
     if (!url) return;
 
     try {
-      const response = await fetch(url);
+      const response = await fetch(url, {
+        credentials: "include",
+      });
       const blob = await response.blob();
       const blobUrl = window.URL.createObjectURL(blob);
 
@@ -83,7 +85,9 @@ export default function App() {
       const r = await fetch(`${API_BASE}/auth/me`, {
         credentials: "include",
       });
+
       const j = await r.json();
+
       if (j?.ok) setUser(j.user);
       else setUser(null);
     } catch {
@@ -97,16 +101,27 @@ export default function App() {
     fetchMe();
   }, []);
 
-  async function login() {
+  async function login(e) {
+    if (e?.preventDefault) e.preventDefault();
+
     setLoginError("");
+
+    const email = (loginEmailRef.current?.value || loginEmail || "").trim();
+    const password = loginPasswordRef.current?.value || loginPassword || "";
+
+    if (!email || !password) {
+      setLoginError("Missing email/password");
+      return;
+    }
+
     try {
       const r = await fetch(`${API_BASE}/auth/login`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
         body: JSON.stringify({
-          email: loginEmail.trim(),
-          password: loginPassword,
+          email,
+          password,
         }),
       });
 
@@ -118,8 +133,15 @@ export default function App() {
       }
 
       setUser(j.user);
+      setLoginEmail(email);
       setLoginPassword("");
+
+      if (loginPasswordRef.current) {
+        loginPasswordRef.current.value = "";
+      }
+
       setAdminOpen(false);
+      setLoginError("");
     } catch {
       setLoginError("Backend not reachable. Is server running?");
     }
@@ -132,6 +154,7 @@ export default function App() {
         credentials: "include",
       });
     } catch {}
+
     setUser(null);
     setAdminOpen(false);
     setUsers([]);
@@ -144,6 +167,7 @@ export default function App() {
       const r = await fetch(`${API_BASE}/admin/users`, {
         credentials: "include",
       });
+
       const j = await r.json();
 
       if (!j?.ok) {
@@ -207,6 +231,7 @@ export default function App() {
     try {
       setStatus("Requesting mic permission...");
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+
       const mr = new MediaRecorder(stream, {
         mimeType: "audio/webm;codecs=opus",
       });
@@ -325,27 +350,36 @@ export default function App() {
           <h1 className="loginTitle">Login</h1>
           <p className="muted">Use your credentials to enter.</p>
 
-          <div className="grid2">
-            <input
-              className="input"
-              placeholder="email@domain.com"
-              value={loginEmail}
-              onChange={(e) => setLoginEmail(e.target.value)}
-            />
-            <input
-              className="input"
-              placeholder="password"
-              type="password"
-              value={loginPassword}
-              onChange={(e) => setLoginPassword(e.target.value)}
-            />
-          </div>
+          <form onSubmit={login}>
+            <div className="grid2">
+              <input
+                ref={loginEmailRef}
+                className="input"
+                name="email"
+                type="email"
+                autoComplete="username"
+                placeholder="email@domain.com"
+                value={loginEmail}
+                onChange={(e) => setLoginEmail(e.target.value)}
+              />
+              <input
+                ref={loginPasswordRef}
+                className="input"
+                name="password"
+                type="password"
+                autoComplete="current-password"
+                placeholder="password"
+                value={loginPassword}
+                onChange={(e) => setLoginPassword(e.target.value)}
+              />
+            </div>
 
-          <div style={{ marginTop: 14 }}>
-            <button className="btn btnPrimary" onClick={login}>
-              Login
-            </button>
-          </div>
+            <div style={{ marginTop: 14 }}>
+              <button className="btn btnPrimary" type="submit">
+                Login
+              </button>
+            </div>
+          </form>
 
           {loginError && <div className="errorBox">{loginError}</div>}
         </div>
