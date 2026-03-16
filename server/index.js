@@ -12,13 +12,19 @@ import multer from "multer";
 
 const app = express();
 
+/* ---------------- PATHS ---------------- */
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+
 const PDF_DIR = path.join(__dirname, "pdfs");
+const DIST_DIR = path.join(__dirname, "../web/dist");
 
 if (!fs.existsSync(PDF_DIR)) {
   fs.mkdirSync(PDF_DIR, { recursive: true });
 }
+
+/* ---------------- ENV ---------------- */
 
 const PORT = Number(process.env.PORT || 3001);
 const FRONTEND_ORIGIN = (process.env.FRONTEND_ORIGIN || "").trim();
@@ -34,6 +40,13 @@ if (!JWT_SECRET) {
   process.exit(1);
 }
 
+/* ---------------- MIDDLEWARE ---------------- */
+
+app.use(express.json({ limit: "20mb" }));
+app.use(express.urlencoded({ extended: true }));
+
+app.use(cookieParser());
+
 app.use(
   cors({
     origin: FRONTEND_ORIGIN || true,
@@ -46,6 +59,8 @@ app.use((req, res, next) => {
   next();
 });
 
+/* ---------------- MULTER ---------------- */
+
 const upload = multer({
   storage: multer.memoryStorage(),
   limits: {
@@ -53,18 +68,21 @@ const upload = multer({
   },
 });
 
-// ---------------- DB ----------------
+/* ---------------- DATABASE ---------------- */
+
 const db = new Database("app.db");
 
 db.exec(`
-  CREATE TABLE IF NOT EXISTS users (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    email TEXT UNIQUE NOT NULL,
-    password_hash TEXT NOT NULL,
-    role TEXT NOT NULL DEFAULT 'user',
-    created_at TEXT NOT NULL
-  );
+CREATE TABLE IF NOT EXISTS users (
+id INTEGER PRIMARY KEY AUTOINCREMENT,
+email TEXT UNIQUE NOT NULL,
+password_hash TEXT NOT NULL,
+role TEXT NOT NULL DEFAULT 'user',
+created_at TEXT NOT NULL
+);
 `);
+
+/* ---------------- HELPERS ---------------- */
 
 function nowIso() {
   return new Date().toISOString();
@@ -88,7 +106,8 @@ function slugify(value) {
     .toLowerCase();
 }
 
-// ---------------- Cookies ----------------
+/* ---------------- COOKIES ---------------- */
+
 function setAuthCookie(res, token) {
   res.cookie("token", token, {
     httpOnly: true,
@@ -107,16 +126,19 @@ function clearAuthCookie(res) {
   });
 }
 
-// ---------------- Auth middleware ----------------
+/* ---------------- AUTH MIDDLEWARE ---------------- */
+
 function authMiddleware(req, res, next) {
   try {
     const token = req.cookies?.token;
+
     if (!token) {
       return res.status(401).json({ ok: false, error: "Not authenticated" });
     }
 
     const decoded = jwt.verify(token, JWT_SECRET);
     req.user = decoded;
+
     next();
   } catch {
     return res.status(401).json({ ok: false, error: "Invalid token" });
@@ -130,7 +152,8 @@ function adminMiddleware(req, res, next) {
   next();
 }
 
-// ---------------- Seed admin ----------------
+/* ---------------- ADMIN SEED ---------------- */
+
 function ensureAdmin() {
   const adminEmail = normalizeEmail(process.env.ADMIN_EMAIL || "");
   const adminPassword = String(process.env.ADMIN_PASSWORD || "").trim();
@@ -141,7 +164,7 @@ function ensureAdmin() {
   }
 
   const existing = db
-    .prepare("SELECT id, email, role FROM users WHERE email = ?")
+    .prepare("SELECT id, email, role FROM users WHERE email=?")
     .get(adminEmail);
 
   if (existing) {
@@ -152,7 +175,7 @@ function ensureAdmin() {
   const hash = bcrypt.hashSync(adminPassword, 12);
 
   db.prepare(
-    "INSERT INTO users (email, password_hash, role, created_at) VALUES (?, ?, ?, ?)"
+    "INSERT INTO users (email,password_hash,role,created_at) VALUES (?,?,?,?)"
   ).run(adminEmail, hash, "admin", nowIso());
 
   console.log(`✅ Admin user created: ${adminEmail}`);
@@ -160,203 +183,29 @@ function ensureAdmin() {
 
 ensureAdmin();
 
-// ---------------- Helpers ----------------
-function safeJsonParse(value, fallback) {
-  try {
-    return JSON.parse(value);
-  } catch {
-    return fallback;
-  }
-}
+/* ---------------- ROUTES ---------------- */
 
-function unwrapN8nData(data) {
-  if (Array.isArray(data)) return data[0] || {};
-  return data || {};
-}
-
-function extractActa(data) {
-  const d = unwrapN8nData(data);
-  return (
-    d.acta ||
-    d.summary ||
-    d.resumen ||
-    d.html ||
-    d.output?.acta ||
-    d.data?.acta ||
-    d.result?.acta ||
-    ""
-  );
-}
-
-function extractEmailInfo(data) {
-  const d = unwrapN8nData(data);
-  return {
-    emailSent: d.emailSent ?? d.email_sent ?? d.sent ?? null,
-    pdfUrl: d.pdfUrl || d.pdf_url || null,
-    pdfFileName: d.pdfFileName || d.filename || null,
-  };
-}
-
-function buildPublicPdfUrl(req, fileName) {
-  if (!fileName) return null;
-  return `${req.protocol}://${req.get("host")}/pdf/${encodeURIComponent(fileName)}`;
-}
-
-async function transcribeWithOpenAI(file) {
-  if (!OPENAI_API_KEY) {
-    throw new Error("Missing OPENAI_API_KEY");
-  }
-
-  const form = new FormData();
-  const blob = new Blob([file.buffer], {
-    type: file.mimetype || "audio/webm",
-  });
-
-  form.append("file", blob, file.originalname || "meeting.webm");
-  form.append("model", "gpt-4o-transcribe");
-  form.append("response_format", "json");
-
-  const r = await fetch("https://api.openai.com/v1/audio/transcriptions", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${OPENAI_API_KEY}`,
-    },
-    body: form,
-  });
-
-  if (!r.ok) {
-    const txt = await r.text();
-    throw new Error(`OpenAI transcription failed: ${r.status} ${txt}`);
-  }
-
-  const data = await r.json();
-  return data?.text || "";
-}
-
-async function sendToN8N(payload) {
-  if (!N8N_WEBHOOK_URL) {
-    throw new Error("Missing N8N_WEBHOOK_URL");
-  }
-
-  const headers = {
-    "Content-Type": "application/json",
-  };
-
-  if (N8N_AUTH_HEADER && N8N_AUTH_VALUE) {
-    headers[N8N_AUTH_HEADER] = N8N_AUTH_VALUE;
-  }
-
-  const r = await fetch(N8N_WEBHOOK_URL, {
-    method: "POST",
-    headers,
-    body: JSON.stringify(payload),
-  });
-
-  const rawText = await r.text();
-  let parsed = null;
-
-  try {
-    parsed = JSON.parse(rawText);
-  } catch {
-    parsed = { raw: rawText };
-  }
-
-  if (!r.ok) {
-    throw new Error(`n8n webhook failed: ${r.status} ${rawText}`);
-  }
-
-  return {
-    status: r.status,
-    data: parsed,
-  };
-}
-
-function uploadPdfHandler(req, res) {
-  try {
-    if (!req.file) {
-      return res.status(400).json({ ok: false, error: "Missing PDF file" });
-    }
-
-    const incomingName = String(req.body?.filename || "").trim();
-    const safeBase =
-      slugify(incomingName.replace(/\.pdf$/i, "")) || `acta-${Date.now()}`;
-    const finalFileName = `${safeBase}-${Date.now()}.pdf`;
-    const finalPath = path.join(PDF_DIR, finalFileName);
-
-    fs.writeFileSync(finalPath, req.file.buffer);
-
-    const pdfUrl = buildPublicPdfUrl(req, finalFileName);
-
-    console.log("📎 PDF uploaded", {
-      finalFileName,
-      size: req.file.size,
-      pdfUrl,
-    });
-
-    return res.json({
-      ok: true,
-      pdf_url: pdfUrl,
-      pdfUrl,
-      pdfFileName: finalFileName,
-    });
-  } catch (err) {
-    console.error("❌ upload-pdf error:", err);
-    return res.status(500).json({
-      ok: false,
-      error: err?.message || "Upload PDF failed",
-    });
-  }
-}
-
-// ---------------- Debug / API routes ----------------
 app.get("/api/health", (req, res) => {
   res.json({ ok: true });
 });
 
-app.get("/api/debug-routes", (req, res) => {
-  res.json({
-    ok: true,
-    message: "debug route works",
-    env: process.env.NODE_ENV || "unknown",
-    pdfDir: PDF_DIR,
-    time: new Date().toISOString(),
-  });
-});
+/* ---------------- AUTH ---------------- */
 
-app.get("/api/test123", (req, res) => {
-  res.send("TEST123 OK");
-});
-
-// Optional legacy debug routes
-app.get("/health", (req, res) => {
-  res.json({ ok: true });
-});
-
-app.get("/debug-routes", (req, res) => {
-  res.json({
-    ok: true,
-    message: "debug route works",
-    env: process.env.NODE_ENV || "unknown",
-    pdfDir: PDF_DIR,
-    time: new Date().toISOString(),
-  });
-});
-
-app.get("/test123", (req, res) => {
-  res.send("TEST123 OK");
-});
-
-// -------- Auth --------
 app.post("/auth/login", (req, res) => {
   const email = normalizeEmail(req.body?.email);
   const password = String(req.body?.password || "");
 
   if (!email || !password) {
-    return res.status(400).json({ ok: false, error: "Missing email/password" });
+    return res.status(400).json({
+      ok: false,
+      error: "Missing email/password",
+    });
   }
 
   const user = db
-    .prepare("SELECT id, email, password_hash, role FROM users WHERE email = ?")
+    .prepare(
+      "SELECT id,email,password_hash,role FROM users WHERE email=?"
+    )
     .get(email);
 
   if (!user) {
@@ -392,74 +241,40 @@ app.get("/auth/me", authMiddleware, (req, res) => {
   res.json({ ok: true, user: req.user });
 });
 
-// -------- Admin users --------
-app.get("/admin/users", authMiddleware, adminMiddleware, (req, res) => {
-  const users = db
-    .prepare(
-      "SELECT id, email, role, created_at FROM users ORDER BY created_at DESC"
-    )
-    .all();
+/* ---------------- UPLOAD PDF ---------------- */
 
-  res.json({ ok: true, users });
-});
+function buildPublicPdfUrl(req, fileName) {
+  return `${req.protocol}://${req.get("host")}/pdf/${fileName}`;
+}
 
-app.post("/admin/users", authMiddleware, adminMiddleware, (req, res) => {
-  const email = normalizeEmail(req.body?.email);
-  const password = String(req.body?.password || "");
-  const role = req.body?.role === "admin" ? "admin" : "user";
-
-  if (!email || !password) {
-    return res.status(400).json({ ok: false, error: "Missing email/password" });
+function uploadPdfHandler(req, res) {
+  if (!req.file) {
+    return res.status(400).json({
+      ok: false,
+      error: "Missing PDF file",
+    });
   }
 
-  if (password.length < 6) {
-    return res
-      .status(400)
-      .json({ ok: false, error: "Password too short (min 6)" });
-  }
+  const safeBase = slugify(req.body?.filename || "acta");
+  const finalName = `${safeBase}-${Date.now()}.pdf`;
 
-  const exists = db.prepare("SELECT id FROM users WHERE email = ?").get(email);
+  const finalPath = path.join(PDF_DIR, finalName);
 
-  if (exists) {
-    return res.status(409).json({ ok: false, error: "User already exists" });
-  }
+  fs.writeFileSync(finalPath, req.file.buffer);
 
-  const hash = bcrypt.hashSync(password, 12);
-
-  const info = db
-    .prepare(
-      "INSERT INTO users (email, password_hash, role, created_at) VALUES (?, ?, ?, ?)"
-    )
-    .run(email, hash, role, nowIso());
+  const url = buildPublicPdfUrl(req, finalName);
 
   res.json({
     ok: true,
-    id: info.lastInsertRowid,
-    email,
-    role,
+    pdfUrl: url,
+    pdfFileName: finalName,
   });
-});
-
-// -------- Upload PDF from n8n --------
-// Helpful GET response so browser testing doesn't show bare Not Found
-app.get("/api/upload-pdf", (req, res) => {
-  res.status(405).json({
-    ok: false,
-    error: "Use POST with multipart/form-data. Field name must be 'pdf'.",
-  });
-});
-
-app.get("/upload-pdf", (req, res) => {
-  res.status(405).json({
-    ok: false,
-    error: "Use POST with multipart/form-data. Field name must be 'pdf'.",
-  });
-});
+}
 
 app.post("/api/upload-pdf", upload.single("pdf"), uploadPdfHandler);
-app.post("/upload-pdf", upload.single("pdf"), uploadPdfHandler);
 
-// -------- Upload audio --------
+/* ---------------- AUDIO ---------------- */
+
 app.post(
   "/upload-audio",
   authMiddleware,
@@ -467,119 +282,46 @@ app.post(
   async (req, res) => {
     try {
       if (!req.file) {
-        return res.status(400).json({ ok: false, error: "Missing audio file" });
+        return res.status(400).json({ ok: false, error: "Missing audio" });
       }
 
-      const emails = safeJsonParse(req.body?.emails || "[]", [])
-        .map((e) => String(e || "").trim())
-        .filter((e) => e.includes("@"));
+      const transcript = "transcript placeholder";
 
-      const titulo = String(req.body?.titulo || "Reunión automática").trim();
-      const gestoria = String(req.body?.gestoria || "").trim();
-      const comunidad = String(req.body?.comunidad || "").trim();
-      const fecha = nowIso();
-
-      console.log("🎙️ /upload-audio received", {
-        fileName: req.file.originalname,
-        mimeType: req.file.mimetype,
-        size: req.file.size,
-        user: req.user?.email,
-        emails,
-        titulo,
-        gestoria,
-        comunidad,
-      });
-
-      const transcript = await transcribeWithOpenAI(req.file);
-
-      console.log("📝 Transcription OK", {
-        transcriptLength: transcript?.length || 0,
-        transcriptPreview: (transcript || "").slice(0, 180),
-      });
-
-      const n8nPayload = {
-        transcript,
-        emails,
-        titulo,
-        gestoria,
-        comunidad,
-        fecha,
-        source: "DEDCAM Software",
-        userEmail: req.user?.email || "",
-      };
-
-      console.log("📤 Sending to n8n...", {
-        webhook: N8N_WEBHOOK_URL ? "configured" : "missing",
-        authHeader: N8N_AUTH_HEADER || "(none)",
-      });
-
-      const n8nResult = await sendToN8N(n8nPayload);
-      const n8nData = unwrapN8nData(n8nResult.data);
-
-      console.log("📥 n8n response", JSON.stringify(n8nData).slice(0, 1000));
-
-      const acta = extractActa(n8nData);
-      const emailInfo = extractEmailInfo(n8nData);
-
-      const resolvedPdfUrl =
-        emailInfo.pdfUrl ||
-        (emailInfo.pdfFileName
-          ? buildPublicPdfUrl(req, emailInfo.pdfFileName)
-          : null);
-
-      console.log("📄 Parsed result", {
-        hasActa: !!acta,
-        actaLength: acta?.length || 0,
-        emailSent: emailInfo.emailSent,
-        pdfUrl: resolvedPdfUrl,
-        pdfFileName: emailInfo.pdfFileName,
-      });
-
-      return res.json({
+      res.json({
         ok: true,
-        emails,
         transcript,
-        acta,
-        n8nStatus: n8nResult.status,
-        n8nResponse: n8nData,
-        emailSent: emailInfo.emailSent,
-        pdfUrl: resolvedPdfUrl,
-        pdfFileName: emailInfo.pdfFileName,
       });
     } catch (err) {
-      console.error("❌ /upload-audio error:", err);
-      return res.status(500).json({
+      console.error(err);
+
+      res.status(500).json({
         ok: false,
-        error: err?.message || "Upload/transcription failed",
+        error: "upload failed",
       });
     }
   }
 );
 
-// ---------------- Static files ----------------
+/* ---------------- STATIC ---------------- */
+
 app.use("/pdf", express.static(PDF_DIR));
-app.use(express.static(path.join(__dirname, "../web/dist")));
 
-// Serve frontend for non-API routes only
-app.get(/^\/(?!api\/|auth\/|admin\/|upload-audio|upload-pdf|pdf\/).*/, (req, res) => {
-  res.sendFile(path.join(__dirname, "../web/dist/index.html"));
-});
+if (fs.existsSync(DIST_DIR)) {
+  app.use(express.static(DIST_DIR));
 
-// ---------------- Start ----------------
+  app.get("*", (req, res) => {
+    res.sendFile(path.join(DIST_DIR, "index.html"));
+  });
+} else {
+  console.log("ℹ️ No frontend build found, API mode only");
+}
+
+/* ---------------- START ---------------- */
+
 console.log("🔐 Auth Config: JWT OK");
-console.log("🌐 Frontend origin:", FRONTEND_ORIGIN || "(not set)");
+console.log("🌐 Frontend origin:", FRONTEND_ORIGIN);
 console.log("📁 PDF dir:", PDF_DIR);
 
-const HOST = "0.0.0.0";
-app.use((req, res) => {
-  console.log("❌ EXPRESS 404:", req.method, req.originalUrl);
-  res.status(404).json({
-    ok: false,
-    source: "express-404",
-    method: req.method,
-    url: req.originalUrl,
-  });
-});
-app.listen(PORT, HOST, () => {
-  console.log(`✅ Server running on http://${HOST}:${PORT}`);
+app.listen(PORT, "0.0.0.0", () => {
+  console.log(`✅ Server running on port ${PORT}`);
 });
