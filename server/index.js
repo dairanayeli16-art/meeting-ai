@@ -9,6 +9,7 @@ import path from "path";
 import fs from "fs";
 import { fileURLToPath } from "url";
 import multer from "multer";
+import puppeteer from "puppeteer";
 
 const app = express();
 app.set("trust proxy", true);
@@ -320,6 +321,548 @@ function buildLibraryForUser(userId) {
   }
 
   return Array.from(agenciesMap.values());
+}
+
+function escapeHtml(value) {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+function normalizeActaObject(actaRaw, titulo, gestoria, comunidad, fecha) {
+  const parsed =
+    typeof actaRaw === "string" ? safeJsonParse(actaRaw, null) : actaRaw;
+
+  if (parsed && typeof parsed === "object") {
+    return {
+      ciudad: parsed.ciudad || "Barcelona",
+      fecha_redaccion: parsed.fecha_redaccion || "",
+      tipo_junta: parsed.tipo_junta || "Ordinaria",
+      convocatoria: {
+        hora_primera: parsed.convocatoria?.hora_primera || "",
+        hora_segunda: parsed.convocatoria?.hora_segunda || "",
+        lugar: parsed.convocatoria?.lugar || "Lugar indicado",
+      },
+      encabezado: {
+        comunidad: parsed.encabezado?.comunidad || comunidad,
+        gestoria: parsed.encabezado?.gestoria || gestoria,
+        titulo: parsed.encabezado?.titulo || titulo,
+        fecha_iso: parsed.encabezado?.fecha_iso || fecha,
+      },
+      asistentes: Array.isArray(parsed.asistentes) ? parsed.asistentes : [],
+      orden_del_dia: Array.isArray(parsed.orden_del_dia) ? parsed.orden_del_dia : [],
+      desarrollo: Array.isArray(parsed.desarrollo) ? parsed.desarrollo : [],
+      acuerdos_globales: Array.isArray(parsed.acuerdos_globales)
+        ? parsed.acuerdos_globales
+        : [],
+      tareas: Array.isArray(parsed.tareas) ? parsed.tareas : [],
+      ruegos_preguntas: parsed.ruegos_preguntas || "",
+      cierre: {
+        hora_fin: parsed.cierre?.hora_fin || "",
+        secretario_administrador:
+          parsed.cierre?.secretario_administrador || "",
+        presidencia: parsed.cierre?.presidencia || "",
+      },
+    };
+  }
+
+  return {
+    ciudad: "Barcelona",
+    fecha_redaccion: "",
+    tipo_junta: "Ordinaria",
+    convocatoria: {
+      hora_primera: "",
+      hora_segunda: "",
+      lugar: "Lugar indicado",
+    },
+    encabezado: {
+      comunidad,
+      gestoria,
+      titulo,
+      fecha_iso: fecha,
+    },
+    asistentes: [],
+    orden_del_dia: [],
+    desarrollo: [
+      {
+        punto: 1,
+        titulo: titulo || "Punto único",
+        resumen: typeof actaRaw === "string" ? actaRaw : "",
+        acuerdos: [],
+        votos: {
+          a_favor: "",
+          en_contra: "",
+          abstenciones: "",
+          detalle: "",
+        },
+      },
+    ],
+    acuerdos_globales: [],
+    tareas: [],
+    ruegos_preguntas: "",
+    cierre: {
+      hora_fin: "",
+      secretario_administrador: "",
+      presidencia: "",
+    },
+  };
+}
+
+async function generateBrandedPdf(req, { actaRaw, titulo, gestoria, comunidad, fecha }) {
+  const acta = normalizeActaObject(actaRaw, titulo, gestoria, comunidad, fecha);
+  const fechaVisible = acta.fecha_redaccion || String(fecha || "").slice(0, 10);
+
+  const ordenHtml =
+    acta.orden_del_dia?.length
+      ? acta.orden_del_dia
+          .map((item, i) => `<li>${escapeHtml(item || `Punto ${i + 1}`)}</li>`)
+          .join("")
+      : "<li>Pendiente de definir</li>";
+
+  const asistentesHtml =
+    acta.asistentes?.length
+      ? acta.asistentes
+          .map(
+            (a) => `
+              <tr>
+                <td>${escapeHtml(a.piso || "")}</td>
+                <td>${escapeHtml(a.propietario || "")}</td>
+                <td>${escapeHtml(a.coeficiente || "")}</td>
+                <td>${escapeHtml(a.representacion || "")}</td>
+              </tr>
+            `
+          )
+          .join("")
+      : `
+        <tr>
+          <td colspan="4">Pendiente de completar</td>
+        </tr>
+      `;
+
+  const desarrolloHtml =
+    acta.desarrollo?.length
+      ? acta.desarrollo
+          .map((p, idx) => {
+            const acuerdos =
+              Array.isArray(p.acuerdos) && p.acuerdos.length
+                ? `<ul>${p.acuerdos.map((a) => `<li>${escapeHtml(a)}</li>`).join("")}</ul>`
+                : "<ul><li>—</li></ul>";
+
+            return `
+              <div class="point-card">
+                <div class="point-header">
+                  <div class="point-number">${escapeHtml(p.punto || idx + 1)}</div>
+                  <div class="point-title">${escapeHtml(p.titulo || `Punto ${idx + 1}`)}</div>
+                </div>
+
+                <div class="subsection">
+                  <div class="sub-title">Desarrollo</div>
+                  <p>${escapeHtml(p.resumen || "")}</p>
+                </div>
+
+                <div class="subsection">
+                  <div class="sub-title">Acuerdos</div>
+                  ${acuerdos}
+                </div>
+
+                <div class="subsection">
+                  <div class="sub-title">Votación</div>
+                  <p>
+                    A favor: ${escapeHtml(p.votos?.a_favor || "—")} |
+                    En contra: ${escapeHtml(p.votos?.en_contra || "—")} |
+                    Abstenciones: ${escapeHtml(p.votos?.abstenciones || "—")}
+                  </p>
+                </div>
+              </div>
+            `;
+          })
+          .join("")
+      : "<p>Sin desarrollo registrado.</p>";
+
+  const acuerdosGlobalesHtml =
+    acta.acuerdos_globales?.length
+      ? `<ul>${acta.acuerdos_globales.map((a) => `<li>${escapeHtml(a)}</li>`).join("")}</ul>`
+      : "<p>Sin acuerdos globales registrados.</p>";
+
+  const tareasHtml =
+    acta.tareas?.length
+      ? `<ul>${acta.tareas
+          .map((t) => `<li>${escapeHtml(typeof t === "string" ? t : JSON.stringify(t))}</li>`)
+          .join("")}</ul>`
+      : "<p>Sin tareas pendientes registradas.</p>";
+
+  const html = `
+    <!DOCTYPE html>
+    <html lang="es">
+    <head>
+      <meta charset="UTF-8" />
+      <title>Acta ${escapeHtml(titulo)}</title>
+      <style>
+        @page {
+          size: A4;
+          margin: 28mm 18mm 24mm 18mm;
+        }
+
+        body {
+          font-family: Arial, Helvetica, sans-serif;
+          color: #171717;
+          font-size: 13px;
+          line-height: 1.55;
+        }
+
+        .topbar {
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+          border-bottom: 3px solid #6c4cf1;
+          padding-bottom: 14px;
+          margin-bottom: 18px;
+        }
+
+        .brand {
+          display: flex;
+          align-items: center;
+          gap: 12px;
+        }
+
+        .brand-badge {
+          width: 46px;
+          height: 46px;
+          border-radius: 12px;
+          background: linear-gradient(135deg, #7c4dff, #b388ff);
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          color: white;
+          font-size: 20px;
+          font-weight: bold;
+        }
+
+        .brand-name {
+          font-size: 26px;
+          font-weight: 800;
+          letter-spacing: 0.3px;
+          color: #6c4cf1;
+        }
+
+        .brand-sub {
+          font-size: 11px;
+          color: #666;
+          margin-top: 2px;
+        }
+
+        .agency-box {
+          text-align: right;
+          font-size: 12px;
+        }
+
+        .agency-box .agency-name {
+          font-size: 16px;
+          font-weight: 700;
+          color: #111;
+        }
+
+        .meta-line {
+          font-size: 12px;
+          color: #4b5563;
+          margin-bottom: 18px;
+        }
+
+        .main-title {
+          font-size: 28px;
+          font-weight: 800;
+          text-align: center;
+          margin: 12px 0 18px 0;
+          letter-spacing: 0.4px;
+        }
+
+        .intro {
+          font-size: 14px;
+          margin-bottom: 18px;
+        }
+
+        .section-title {
+          margin-top: 18px;
+          margin-bottom: 8px;
+          font-size: 18px;
+          font-weight: 800;
+          color: #111;
+          border-bottom: 1px solid #d4d4d8;
+          padding-bottom: 6px;
+        }
+
+        .data-grid {
+          display: grid;
+          grid-template-columns: 1fr 1fr;
+          gap: 8px 18px;
+          margin-bottom: 8px;
+        }
+
+        .data-item {
+          background: #fafafa;
+          border: 1px solid #e5e7eb;
+          border-radius: 10px;
+          padding: 10px 12px;
+        }
+
+        .data-label {
+          font-size: 11px;
+          color: #6b7280;
+          text-transform: uppercase;
+          letter-spacing: 0.4px;
+          margin-bottom: 3px;
+        }
+
+        .data-value {
+          font-size: 14px;
+          font-weight: 600;
+          color: #111827;
+        }
+
+        ol {
+          margin: 8px 0 0 24px;
+          padding: 0;
+        }
+
+        ol li {
+          margin-bottom: 6px;
+        }
+
+        ul {
+          margin: 8px 0 0 20px;
+          padding: 0;
+        }
+
+        table {
+          width: 100%;
+          border-collapse: collapse;
+          margin-top: 10px;
+        }
+
+        th, td {
+          border: 1px solid #111;
+          padding: 8px 9px;
+          font-size: 12px;
+          vertical-align: top;
+        }
+
+        th {
+          background: #f3f4f6;
+          font-weight: 700;
+          text-align: left;
+        }
+
+        .point-card {
+          border: 1px solid #d4d4d8;
+          border-radius: 14px;
+          overflow: hidden;
+          margin-top: 12px;
+          background: #fcfcfd;
+        }
+
+        .point-header {
+          display: flex;
+          align-items: center;
+          gap: 14px;
+          padding: 14px 16px;
+          background: #f5f3ff;
+          border-bottom: 1px solid #ddd6fe;
+        }
+
+        .point-number {
+          min-width: 34px;
+          height: 34px;
+          border-radius: 10px;
+          background: white;
+          border: 1px solid #d4d4d8;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          font-weight: 800;
+          font-size: 18px;
+        }
+
+        .point-title {
+          font-size: 16px;
+          font-weight: 800;
+        }
+
+        .subsection {
+          padding: 14px 16px 4px 16px;
+        }
+
+        .sub-title {
+          font-size: 12px;
+          text-transform: uppercase;
+          letter-spacing: 0.4px;
+          color: #6b7280;
+          font-weight: 700;
+          margin-bottom: 5px;
+        }
+
+        .footer-signatures {
+          display: grid;
+          grid-template-columns: 1fr 1fr;
+          gap: 30px;
+          margin-top: 40px;
+        }
+
+        .signature-box {
+          padding-top: 18px;
+          border-top: 1px solid #111;
+          text-align: center;
+          font-weight: 600;
+        }
+
+        .tiny-note {
+          margin-top: 18px;
+          font-size: 11px;
+          color: #6b7280;
+          text-align: center;
+        }
+      </style>
+    </head>
+    <body>
+      <div class="topbar">
+        <div class="brand">
+          <div class="brand-badge">D</div>
+          <div>
+            <div class="brand-name">DEDCAM SOFTWARE</div>
+            <div class="brand-sub">AI recorder with transcription and PDF creation</div>
+          </div>
+        </div>
+
+        <div class="agency-box">
+          <div class="agency-name">${escapeHtml(gestoria)}</div>
+          <div>Comunidad: ${escapeHtml(comunidad)}</div>
+        </div>
+      </div>
+
+      <div class="meta-line">
+        En ${escapeHtml(acta.ciudad || "Barcelona")}, a ${escapeHtml(fechaVisible)}.
+      </div>
+
+      <div class="main-title">ACTA DE JUNTA ${escapeHtml((acta.tipo_junta || "Ordinaria").toUpperCase())}</div>
+
+      <div class="intro">
+        Convocados previa citación escrita, se reúne la Junta de Propietarios de
+        <strong>${escapeHtml(comunidad)}</strong>, administrada por
+        <strong>${escapeHtml(gestoria)}</strong>, en
+        <strong>${escapeHtml(acta.convocatoria?.lugar || "el lugar indicado")}</strong>,
+        para tratar los asuntos del Orden del Día.
+      </div>
+
+      <div class="section-title">Datos de la reunión</div>
+      <div class="data-grid">
+        <div class="data-item">
+          <div class="data-label">Título</div>
+          <div class="data-value">${escapeHtml(titulo)}</div>
+        </div>
+        <div class="data-item">
+          <div class="data-label">Fecha ISO</div>
+          <div class="data-value">${escapeHtml(acta.encabezado?.fecha_iso || fecha || "")}</div>
+        </div>
+        <div class="data-item">
+          <div class="data-label">Convocatoria primera</div>
+          <div class="data-value">${escapeHtml(acta.convocatoria?.hora_primera || "—")}</div>
+        </div>
+        <div class="data-item">
+          <div class="data-label">Convocatoria segunda</div>
+          <div class="data-value">${escapeHtml(acta.convocatoria?.hora_segunda || "—")}</div>
+        </div>
+      </div>
+
+      <div class="section-title">Orden del día</div>
+      <ol>${ordenHtml}</ol>
+
+      <div class="section-title">Asistentes</div>
+      <table>
+        <thead>
+          <tr>
+            <th style="width: 18%;">Piso</th>
+            <th style="width: 32%;">Propietario</th>
+            <th style="width: 15%;">Coef.</th>
+            <th>Asistencia / Representación</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${asistentesHtml}
+        </tbody>
+      </table>
+
+      <div class="section-title">Desarrollo de la reunión</div>
+      ${desarrolloHtml}
+
+      <div class="section-title">Acuerdos globales</div>
+      ${acuerdosGlobalesHtml}
+
+      <div class="section-title">Tareas</div>
+      ${tareasHtml}
+
+      <div class="section-title">Ruegos y preguntas</div>
+      <p>${escapeHtml(acta.ruegos_preguntas || "Sin ruegos y preguntas registrados.")}</p>
+
+      <div class="footer-signatures">
+        <div class="signature-box">
+          ${escapeHtml(acta.cierre?.secretario_administrador || "Administrador / Secretario")}
+        </div>
+        <div class="signature-box">
+          ${escapeHtml(acta.cierre?.presidencia || "Presidencia")}
+        </div>
+      </div>
+
+      <div class="tiny-note">
+        Documento generado automáticamente por DEDCAM SOFTWARE.
+      </div>
+    </body>
+    </html>
+  `;
+
+  const browser = await puppeteer.launch({
+    headless: true,
+    args: ["--no-sandbox", "--disable-setuid-sandbox"],
+  });
+
+  try {
+    const page = await browser.newPage();
+    await page.setContent(html, { waitUntil: "networkidle0" });
+
+    const finalName = `${slugify(titulo || "acta") || "acta"}-${Date.now()}.pdf`;
+    const finalPath = path.join(PDF_DIR, finalName);
+
+    await page.pdf({
+      path: finalPath,
+      format: "A4",
+      printBackground: true,
+      margin: {
+        top: "12mm",
+        right: "10mm",
+        bottom: "14mm",
+        left: "10mm",
+      },
+    });
+
+    return {
+      fileName: finalName,
+      pdfUrl: buildPublicPdfUrl(req, finalName),
+    };
+  } finally {
+    await browser.close();
+  }
+}
+
+function shouldUseBrandedFallback(emailInfo) {
+  if (!emailInfo?.pdfUrl) return true;
+  if (!emailInfo?.pdfFileName) return true;
+
+  const badName =
+    String(emailInfo.pdfFileName).includes("acta-Reunión automática.pdf") ||
+    String(emailInfo.pdfFileName).includes("acta-Reunion automatica.pdf") ||
+    !String(emailInfo.pdfFileName).includes("-");
+
+  return badName;
 }
 
 /* ---------------- COOKIES ---------------- */
