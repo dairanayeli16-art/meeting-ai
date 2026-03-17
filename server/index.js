@@ -111,7 +111,7 @@ function slugify(value) {
 function setAuthCookie(res, token) {
   res.cookie("token", token, {
     httpOnly: true,
-    sameSite: "lax",
+    sameSite: IS_PROD ? "none" : "lax",
     secure: IS_PROD,
     path: "/",
     maxAge: 7 * 24 * 60 * 60 * 1000,
@@ -121,7 +121,7 @@ function setAuthCookie(res, token) {
 function clearAuthCookie(res) {
   res.clearCookie("token", {
     path: "/",
-    sameSite: "lax",
+    sameSite: IS_PROD ? "none" : "lax",
     secure: IS_PROD,
   });
 }
