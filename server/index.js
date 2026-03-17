@@ -11,6 +11,7 @@ import { fileURLToPath } from "url";
 import multer from "multer";
 
 const app = express();
+app.set("trust proxy", true);
 
 /* ---------------- PATHS ---------------- */
 
@@ -70,6 +71,7 @@ const upload = multer({
 /* ---------------- DATABASE ---------------- */
 
 const db = new Database("app.db");
+db.pragma("foreign_keys = ON");
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS users (
@@ -78,6 +80,45 @@ db.exec(`
     password_hash TEXT NOT NULL,
     role TEXT NOT NULL DEFAULT 'user',
     created_at TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS agencies (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    name TEXT NOT NULL,
+    name_normalized TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    UNIQUE(user_id, name_normalized),
+    FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+  );
+
+  CREATE TABLE IF NOT EXISTS communities (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    agency_id INTEGER NOT NULL,
+    name TEXT NOT NULL,
+    name_normalized TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    UNIQUE(agency_id, name_normalized),
+    FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY(agency_id) REFERENCES agencies(id) ON DELETE CASCADE
+  );
+
+  CREATE TABLE IF NOT EXISTS meetings (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    agency_id INTEGER NOT NULL,
+    community_id INTEGER NOT NULL,
+    titulo TEXT NOT NULL,
+    fecha TEXT NOT NULL,
+    transcript TEXT NOT NULL DEFAULT '',
+    acta TEXT NOT NULL DEFAULT '',
+    pdf_url TEXT,
+    email_sent INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY(agency_id) REFERENCES agencies(id) ON DELETE CASCADE,
+    FOREIGN KEY(community_id) REFERENCES communities(id) ON DELETE CASCADE
   );
 `);
 
@@ -89,6 +130,14 @@ function nowIso() {
 
 function normalizeEmail(email) {
   return String(email || "").trim().toLowerCase();
+}
+
+function normalizeName(value) {
+  return String(value || "")
+    .trim()
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "");
 }
 
 function signJwt(payload) {
@@ -144,6 +193,133 @@ function extractEmailInfo(data) {
 function buildPublicPdfUrl(req, fileName) {
   if (!fileName) return null;
   return `${req.protocol}://${req.get("host")}/pdf/${encodeURIComponent(fileName)}`;
+}
+
+function getAgencyById(userId, agencyId) {
+  return db
+    .prepare("SELECT * FROM agencies WHERE id = ? AND user_id = ?")
+    .get(agencyId, userId);
+}
+
+function getCommunityById(userId, communityId) {
+  return db
+    .prepare("SELECT * FROM communities WHERE id = ? AND user_id = ?")
+    .get(communityId, userId);
+}
+
+function ensureAgency(userId, agencyName) {
+  const cleanName = String(agencyName || "").trim();
+  if (!cleanName) {
+    throw new Error("Missing agency name");
+  }
+
+  const normalized = normalizeName(cleanName);
+
+  let agency = db
+    .prepare(
+      "SELECT * FROM agencies WHERE user_id = ? AND name_normalized = ?"
+    )
+    .get(userId, normalized);
+
+  if (agency) return agency;
+
+  const info = db
+    .prepare(
+      "INSERT INTO agencies (user_id, name, name_normalized, created_at) VALUES (?, ?, ?, ?)"
+    )
+    .run(userId, cleanName, normalized, nowIso());
+
+  agency = db
+    .prepare("SELECT * FROM agencies WHERE id = ?")
+    .get(info.lastInsertRowid);
+
+  return agency;
+}
+
+function ensureCommunity(userId, agencyId, communityName) {
+  const cleanName = String(communityName || "").trim();
+  if (!cleanName) {
+    throw new Error("Missing community name");
+  }
+
+  const normalized = normalizeName(cleanName);
+
+  let community = db
+    .prepare(
+      "SELECT * FROM communities WHERE agency_id = ? AND name_normalized = ?"
+    )
+    .get(agencyId, normalized);
+
+  if (community) return community;
+
+  const info = db
+    .prepare(
+      "INSERT INTO communities (user_id, agency_id, name, name_normalized, created_at) VALUES (?, ?, ?, ?, ?)"
+    )
+    .run(userId, agencyId, cleanName, normalized, nowIso());
+
+  community = db
+    .prepare("SELECT * FROM communities WHERE id = ?")
+    .get(info.lastInsertRowid);
+
+  return community;
+}
+
+function buildLibraryForUser(userId) {
+  const agencies = db
+    .prepare(
+      "SELECT id, name, created_at FROM agencies WHERE user_id = ? ORDER BY name COLLATE NOCASE ASC"
+    )
+    .all(userId);
+
+  const communities = db
+    .prepare(
+      "SELECT id, agency_id, name, created_at FROM communities WHERE user_id = ? ORDER BY name COLLATE NOCASE ASC"
+    )
+    .all(userId);
+
+  const meetings = db
+    .prepare(
+      `SELECT 
+        id, user_id, agency_id, community_id, titulo, fecha, transcript, acta, pdf_url, email_sent, created_at
+       FROM meetings
+       WHERE user_id = ?
+       ORDER BY datetime(created_at) DESC`
+    )
+    .all(userId);
+
+  const agenciesMap = new Map();
+
+  for (const agency of agencies) {
+    agenciesMap.set(agency.id, {
+      ...agency,
+      communities: [],
+    });
+  }
+
+  const communitiesMap = new Map();
+
+  for (const community of communities) {
+    const item = {
+      ...community,
+      meetings: [],
+    };
+    communitiesMap.set(community.id, item);
+
+    const agency = agenciesMap.get(community.agency_id);
+    if (agency) {
+      agency.communities.push(item);
+    }
+  }
+
+  for (const meeting of meetings) {
+    const community = communitiesMap.get(meeting.community_id);
+    if (community) {
+      community.meetings.push(meeting);
+    }
+  }
+
+  return Array.from(agenciesMap.values());
 }
 
 /* ---------------- COOKIES ---------------- */
@@ -204,7 +380,7 @@ function ensureAdmin() {
   }
 
   const existing = db
-    .prepare("SELECT id, email, role FROM users WHERE email=?")
+    .prepare("SELECT id, email, role FROM users WHERE email = ?")
     .get(adminEmail);
 
   if (existing) {
@@ -215,7 +391,7 @@ function ensureAdmin() {
   const hash = bcrypt.hashSync(adminPassword, 12);
 
   db.prepare(
-    "INSERT INTO users (email,password_hash,role,created_at) VALUES (?,?,?,?)"
+    "INSERT INTO users (email, password_hash, role, created_at) VALUES (?, ?, ?, ?)"
   ).run(adminEmail, hash, "admin", nowIso());
 
   console.log(`✅ Admin user created: ${adminEmail}`);
@@ -326,7 +502,9 @@ app.post("/auth/login", (req, res) => {
   }
 
   const user = db
-    .prepare("SELECT id,email,password_hash,role FROM users WHERE email=?")
+    .prepare(
+      "SELECT id, email, password_hash, role FROM users WHERE email = ?"
+    )
     .get(email);
 
   if (!user) {
@@ -366,7 +544,9 @@ app.get("/auth/me", authMiddleware, (req, res) => {
 
 app.get("/admin/users", authMiddleware, adminMiddleware, (req, res) => {
   const users = db
-    .prepare("SELECT id,email,role,created_at FROM users ORDER BY created_at DESC")
+    .prepare(
+      "SELECT id, email, role, created_at FROM users ORDER BY created_at DESC"
+    )
     .all();
 
   res.json({ ok: true, users });
@@ -385,7 +565,7 @@ app.post("/admin/users", authMiddleware, adminMiddleware, (req, res) => {
     return res.status(400).json({ ok: false, error: "Password too short (min 6)" });
   }
 
-  const exists = db.prepare("SELECT id FROM users WHERE email=?").get(email);
+  const exists = db.prepare("SELECT id FROM users WHERE email = ?").get(email);
 
   if (exists) {
     return res.status(409).json({ ok: false, error: "User already exists" });
@@ -395,7 +575,7 @@ app.post("/admin/users", authMiddleware, adminMiddleware, (req, res) => {
 
   const info = db
     .prepare(
-      "INSERT INTO users (email,password_hash,role,created_at) VALUES (?,?,?,?)"
+      "INSERT INTO users (email, password_hash, role, created_at) VALUES (?, ?, ?, ?)"
     )
     .run(email, hash, role, nowIso());
 
@@ -405,6 +585,60 @@ app.post("/admin/users", authMiddleware, adminMiddleware, (req, res) => {
     email,
     role,
   });
+});
+
+/* ---------------- AGENCIES / COMMUNITIES / LIBRARY ---------------- */
+
+app.get("/api/library", authMiddleware, (req, res) => {
+  const agencies = buildLibraryForUser(req.user.id);
+  res.json({ ok: true, agencies });
+});
+
+app.post("/api/agencies", authMiddleware, (req, res) => {
+  try {
+    const name = String(req.body?.name || "").trim();
+
+    if (!name) {
+      return res.status(400).json({ ok: false, error: "Missing agency name" });
+    }
+
+    const agency = ensureAgency(req.user.id, name);
+    res.json({ ok: true, agency });
+  } catch (err) {
+    res.status(500).json({
+      ok: false,
+      error: err?.message || "Failed to create agency",
+    });
+  }
+});
+
+app.post("/api/communities", authMiddleware, (req, res) => {
+  try {
+    const agencyId = Number(req.body?.agencyId || 0);
+    const name = String(req.body?.name || "").trim();
+
+    if (!agencyId) {
+      return res.status(400).json({ ok: false, error: "Missing agencyId" });
+    }
+
+    if (!name) {
+      return res.status(400).json({ ok: false, error: "Missing community name" });
+    }
+
+    const agency = getAgencyById(req.user.id, agencyId);
+
+    if (!agency) {
+      return res.status(404).json({ ok: false, error: "Agency not found" });
+    }
+
+    const community = ensureCommunity(req.user.id, agency.id, name);
+    res.json({ ok: true, community });
+  } catch (err) {
+    res.status(500).json({
+      ok: false,
+      error: err?.message || "Failed to create community",
+    });
+  }
 });
 
 /* ---------------- PDF UPLOAD ---------------- */
@@ -474,8 +708,37 @@ app.post(
         .filter((e) => e.includes("@"));
 
       const titulo = String(req.body?.titulo || "Reunión automática").trim();
-      const gestoria = String(req.body?.gestoria || "").trim();
-      const comunidad = String(req.body?.comunidad || "").trim();
+
+      const agencyIdFromBody = Number(req.body?.agencyId || 0);
+      const communityIdFromBody = Number(req.body?.communityId || 0);
+      const gestoriaBody = String(req.body?.gestoria || "").trim();
+      const comunidadBody = String(req.body?.comunidad || "").trim();
+
+      let agency = null;
+      let community = null;
+
+      if (agencyIdFromBody) {
+        agency = getAgencyById(req.user.id, agencyIdFromBody);
+      }
+      if (!agency && gestoriaBody) {
+        agency = ensureAgency(req.user.id, gestoriaBody);
+      }
+      if (!agency) {
+        return res.status(400).json({ ok: false, error: "Missing agency" });
+      }
+
+      if (communityIdFromBody) {
+        community = getCommunityById(req.user.id, communityIdFromBody);
+      }
+      if (!community && comunidadBody) {
+        community = ensureCommunity(req.user.id, agency.id, comunidadBody);
+      }
+      if (!community) {
+        return res.status(400).json({ ok: false, error: "Missing community" });
+      }
+
+      const gestoria = agency.name;
+      const comunidad = community.name;
       const fecha = nowIso();
 
       console.log("🎙️ /upload-audio received", {
@@ -527,6 +790,29 @@ app.post(
         pdfFileName: emailInfo.pdfFileName,
       });
 
+      const info = db
+        .prepare(
+          `INSERT INTO meetings
+           (user_id, agency_id, community_id, titulo, fecha, transcript, acta, pdf_url, email_sent, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        )
+        .run(
+          req.user.id,
+          agency.id,
+          community.id,
+          titulo,
+          fecha,
+          transcript,
+          acta,
+          resolvedPdfUrl,
+          emailInfo.emailSent ? 1 : 0,
+          nowIso()
+        );
+
+      const meeting = db
+        .prepare("SELECT * FROM meetings WHERE id = ?")
+        .get(info.lastInsertRowid);
+
       return res.json({
         ok: true,
         emails,
@@ -537,6 +823,9 @@ app.post(
         emailSent: emailInfo.emailSent,
         pdfUrl: resolvedPdfUrl,
         pdfFileName: emailInfo.pdfFileName,
+        agency,
+        community,
+        meeting,
       });
     } catch (err) {
       console.error("❌ /upload-audio error:", err);
