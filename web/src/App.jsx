@@ -604,40 +604,46 @@ export default function App() {
 
       <div className="card cardWide">
         <div className="topRow">
-          <div className="brandRow">
-            <div className="logo">🎙️</div>
-            <div>
-              <div className="titleRow">
-                <h1 className="title">DEDCAM SOFTWARE</h1>
-                <div className="pill">{status}</div>
-              </div>
-              <div className="subtitle">
-                AI recorder with transcription and PDF creation — 2026 version
-              </div>
-              <div className="muted small">
-                Logged in as: {user.email} ({user.role})
-              </div>
-            </div>
-          </div>
+  <div className="brandRow">
+    <div className="logo">
+      <img src="/recorder-icon.png" alt="DEDCAM recorder" />
+    </div>
 
-          <div className="actionsRow">
-            {user.role === "admin" && (
-              <button
-                className="btn btnGhost"
-                onClick={async () => {
-                  const next = !adminOpen;
-                  setAdminOpen(next);
-                  if (next) await loadUsers();
-                }}
-              >
-                Admin
-              </button>
-            )}
-            <button className="btn btnGhost" onClick={logout}>
-              Logout
-            </button>
-          </div>
-        </div>
+    <div>
+      <div className="titleRow">
+        <h1 className="title">DEDCAM SOFTWARE</h1>
+        <div className="pill">{status}</div>
+      </div>
+
+      <div className="subtitle">
+        AI recorder with transcription and PDF creation — 2026 version
+      </div>
+
+      <div className="muted small">
+        Logged in as: {user.email} ({user.role})
+      </div>
+    </div>
+  </div>
+
+  <div className="actionsRow">
+    {user.role === "admin" && (
+      <button
+        className="btn btnGhost"
+        onClick={async () => {
+          const next = !adminOpen;
+          setAdminOpen(next);
+          if (next) await loadUsers();
+        }}
+      >
+        Admin
+      </button>
+    )}
+
+    <button className="btn btnGhost" onClick={logout}>
+      Logout
+    </button>
+  </div>
+</div>
 
         <div className="divider" />
 

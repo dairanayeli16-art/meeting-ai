@@ -853,9 +853,10 @@ async function generateBrandedPdf(req, { actaRaw, titulo, gestoria, comunidad, f
       fileName: finalName,
       pdfUrl: buildPublicPdfUrl(req, finalName),
     };
-  } finally {
+    } finally {
     await browser.close();
   }
+}
 
 /* ---------------- COOKIES ---------------- */
 
@@ -1308,40 +1309,40 @@ app.post(
       const n8nResult = await sendToN8N(payload);
       const n8nData = unwrapN8nData(n8nResult.data);
 
-const acta = extractActa(n8nData);
-const emailInfo = extractEmailInfo(n8nData);
+      const acta = extractActa(n8nData);
+      const emailInfo = extractEmailInfo(n8nData);
 
-let resolvedPdfUrl =
-  emailInfo.pdfUrl ||
-  (emailInfo.pdfFileName
-    ? buildPublicPdfUrl(req, emailInfo.pdfFileName)
-    : null);
+      let resolvedPdfUrl =
+        emailInfo.pdfUrl ||
+        (emailInfo.pdfFileName
+          ? buildPublicPdfUrl(req, emailInfo.pdfFileName)
+          : null);
 
-let resolvedPdfFileName = emailInfo.pdfFileName || null;
+      let resolvedPdfFileName = emailInfo.pdfFileName || null;
 
-try {
-  const brandedPdf = await generateBrandedPdf(req, {
-    actaRaw: acta,
-    titulo,
-    gestoria,
-    comunidad,
-    fecha,
-  });
+      try {
+        const brandedPdf = await generateBrandedPdf(req, {
+          actaRaw: acta,
+          titulo,
+          gestoria,
+          comunidad,
+          fecha,
+        });
 
-  resolvedPdfUrl = brandedPdf.pdfUrl;
-  resolvedPdfFileName = brandedPdf.fileName;
-} catch (pdfErr) {
-  console.error("❌ branded PDF failed, fallback to n8n PDF:", pdfErr);
-}
+        resolvedPdfUrl = brandedPdf.pdfUrl;
+        resolvedPdfFileName = brandedPdf.fileName;
+      } catch (pdfErr) {
+        console.error("❌ branded PDF failed, fallback to existing PDF:", pdfErr);
+      }
 
-console.log("📄 Parsed result", {
-  hasActa: !!acta,
-  actaLength: acta?.length || 0,
-  emailSent: emailInfo.emailSent,
-  n8nPdfUrl: emailInfo.pdfUrl || null,
-  finalPdfUrl: resolvedPdfUrl,
-  finalPdfFileName: resolvedPdfFileName,
-});
+      console.log("📄 Parsed result", {
+        hasActa: !!acta,
+        actaLength: acta?.length || 0,
+        emailSent: emailInfo.emailSent,
+        n8nPdfUrl: emailInfo.pdfUrl || null,
+        finalPdfUrl: resolvedPdfUrl,
+        finalPdfFileName: resolvedPdfFileName,
+      });
 
       const info = db
         .prepare(
@@ -1367,19 +1368,19 @@ console.log("📄 Parsed result", {
         .get(info.lastInsertRowid);
 
       return res.json({
-  ok: true,
-  emails,
-  transcript,
-  acta,
-  n8nStatus: n8nResult.status,
-  n8nResponse: n8nData,
-  emailSent: emailInfo.emailSent,
-  pdfUrl: resolvedPdfUrl,
-  pdfFileName: resolvedPdfFileName,
-  agency,
-  community,
-  meeting,
-});
+        ok: true,
+        emails,
+        transcript,
+        acta,
+        n8nStatus: n8nResult.status,
+        n8nResponse: n8nData,
+        emailSent: emailInfo.emailSent,
+        pdfUrl: resolvedPdfUrl,
+        pdfFileName: resolvedPdfFileName,
+        agency,
+        community,
+        meeting,
+      });
     } catch (err) {
       console.error("❌ /upload-audio error:", err);
 
