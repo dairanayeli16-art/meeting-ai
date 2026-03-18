@@ -820,9 +820,14 @@ async function generateBrandedPdf(req, { actaRaw, titulo, gestoria, comunidad, f
     </html>
   `;
 
-  const browser = await puppeteer.launch({
+      const browser = await puppeteer.launch({
     headless: true,
-    args: ["--no-sandbox", "--disable-setuid-sandbox"],
+    executablePath: puppeteer.executablePath(),
+    args: [
+      "--no-sandbox",
+      "--disable-setuid-sandbox",
+      "--disable-dev-shm-usage",
+    ],
   });
 
   try {
@@ -851,19 +856,6 @@ async function generateBrandedPdf(req, { actaRaw, titulo, gestoria, comunidad, f
   } finally {
     await browser.close();
   }
-}
-
-function shouldUseBrandedFallback(emailInfo) {
-  if (!emailInfo?.pdfUrl) return true;
-  if (!emailInfo?.pdfFileName) return true;
-
-  const badName =
-    String(emailInfo.pdfFileName).includes("acta-Reunión automática.pdf") ||
-    String(emailInfo.pdfFileName).includes("acta-Reunion automatica.pdf") ||
-    !String(emailInfo.pdfFileName).includes("-");
-
-  return badName;
-}
 
 /* ---------------- COOKIES ---------------- */
 
@@ -1316,28 +1308,39 @@ app.post(
       const n8nResult = await sendToN8N(payload);
       const n8nData = unwrapN8nData(n8nResult.data);
 
-      const acta = extractActa(n8nData);
+const acta = extractActa(n8nData);
 const emailInfo = extractEmailInfo(n8nData);
 
-// ✅ Generar SIEMPRE el PDF branded en tu backend
-const brandedPdf = await generateBrandedPdf(req, {
-  actaRaw: acta,
-  titulo,
-  gestoria,
-  comunidad,
-  fecha,
-});
+let resolvedPdfUrl =
+  emailInfo.pdfUrl ||
+  (emailInfo.pdfFileName
+    ? buildPublicPdfUrl(req, emailInfo.pdfFileName)
+    : null);
 
-const resolvedPdfUrl = brandedPdf.pdfUrl;
-const resolvedPdfFileName = brandedPdf.fileName;
+let resolvedPdfFileName = emailInfo.pdfFileName || null;
+
+try {
+  const brandedPdf = await generateBrandedPdf(req, {
+    actaRaw: acta,
+    titulo,
+    gestoria,
+    comunidad,
+    fecha,
+  });
+
+  resolvedPdfUrl = brandedPdf.pdfUrl;
+  resolvedPdfFileName = brandedPdf.fileName;
+} catch (pdfErr) {
+  console.error("❌ branded PDF failed, fallback to n8n PDF:", pdfErr);
+}
 
 console.log("📄 Parsed result", {
   hasActa: !!acta,
   actaLength: acta?.length || 0,
   emailSent: emailInfo.emailSent,
   n8nPdfUrl: emailInfo.pdfUrl || null,
-  brandedPdfUrl: resolvedPdfUrl,
-  brandedPdfFileName: resolvedPdfFileName,
+  finalPdfUrl: resolvedPdfUrl,
+  finalPdfFileName: resolvedPdfFileName,
 });
 
       const info = db
