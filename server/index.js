@@ -1317,21 +1317,28 @@ app.post(
       const n8nData = unwrapN8nData(n8nResult.data);
 
       const acta = extractActa(n8nData);
-      const emailInfo = extractEmailInfo(n8nData);
+const emailInfo = extractEmailInfo(n8nData);
 
-      const resolvedPdfUrl =
-        emailInfo.pdfUrl ||
-        (emailInfo.pdfFileName
-          ? buildPublicPdfUrl(req, emailInfo.pdfFileName)
-          : null);
+// ✅ Generar SIEMPRE el PDF branded en tu backend
+const brandedPdf = await generateBrandedPdf(req, {
+  actaRaw: acta,
+  titulo,
+  gestoria,
+  comunidad,
+  fecha,
+});
 
-      console.log("📄 Parsed result", {
-        hasActa: !!acta,
-        actaLength: acta?.length || 0,
-        emailSent: emailInfo.emailSent,
-        pdfUrl: resolvedPdfUrl,
-        pdfFileName: emailInfo.pdfFileName,
-      });
+const resolvedPdfUrl = brandedPdf.pdfUrl;
+const resolvedPdfFileName = brandedPdf.fileName;
+
+console.log("📄 Parsed result", {
+  hasActa: !!acta,
+  actaLength: acta?.length || 0,
+  emailSent: emailInfo.emailSent,
+  n8nPdfUrl: emailInfo.pdfUrl || null,
+  brandedPdfUrl: resolvedPdfUrl,
+  brandedPdfFileName: resolvedPdfFileName,
+});
 
       const info = db
         .prepare(
@@ -1357,19 +1364,19 @@ app.post(
         .get(info.lastInsertRowid);
 
       return res.json({
-        ok: true,
-        emails,
-        transcript,
-        acta,
-        n8nStatus: n8nResult.status,
-        n8nResponse: n8nData,
-        emailSent: emailInfo.emailSent,
-        pdfUrl: resolvedPdfUrl,
-        pdfFileName: emailInfo.pdfFileName,
-        agency,
-        community,
-        meeting,
-      });
+  ok: true,
+  emails,
+  transcript,
+  acta,
+  n8nStatus: n8nResult.status,
+  n8nResponse: n8nData,
+  emailSent: emailInfo.emailSent,
+  pdfUrl: resolvedPdfUrl,
+  pdfFileName: resolvedPdfFileName,
+  agency,
+  community,
+  meeting,
+});
     } catch (err) {
       console.error("❌ /upload-audio error:", err);
 
