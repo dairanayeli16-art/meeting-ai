@@ -6,7 +6,7 @@
  */
 
 import { useState, useEffect } from "react";
-import { supabase } from "./lib/supabaseClient";
+import { supabase } from "./src/lib/supabaseClient";
 
 /* ─────────────────────────────────────────────────────────
    COPY (all UI text, both languages)
@@ -559,7 +559,7 @@ function DiagnosisForm({ lang, t }) {
                 <option value="+44">🇬🇧 +44</option>
                 <option value="+1">🇺🇸 +1</option>
                 <option value="+55">🇧🇷 +55</option>
-                <option value="+52">🇲🇽 +52</option>
+                <option value="+34">🇲🇽 +52</option>
               </select>
               <input
                 type="tel"
